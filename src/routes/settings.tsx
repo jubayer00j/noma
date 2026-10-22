@@ -276,8 +276,14 @@ function SettingsPage() {
           description="Optional, and independent from how you sign in to Noma."
         >
           <DriveCard
-            autoBackup={settings.autoBackup}
-            onAutoBackupChange={(autoBackup) => void update({ autoBackup })}
+            backupMode={settings.backupMode}
+            backupIntervalMinutes={settings.backupIntervalMinutes}
+            onBackupModeChange={(backupMode) =>
+              void update({ backupMode, autoBackup: backupMode !== "off" })
+            }
+            onBackupIntervalChange={(backupIntervalMinutes) =>
+              void update({ backupIntervalMinutes })
+            }
           />
         </Section>
 

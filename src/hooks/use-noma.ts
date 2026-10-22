@@ -2,7 +2,7 @@ import { useLiveQuery } from "dexie-react-hooks";
 import { useCallback, useEffect, useState } from "react";
 import { saveSettings } from "@/lib/noma/db";
 import { useDatabase } from "@/lib/noma/DatabaseContext";
-import { DEFAULT_SETTINGS, type AppSettings } from "@/lib/noma/types";
+import { DEFAULT_SETTINGS, withBackupModeMigration, type AppSettings } from "@/lib/noma/types";
 
 export function useSettings() {
   const { db } = useDatabase();
@@ -16,14 +16,17 @@ export function useSettings() {
     undefined,
   );
   const stored = result?.row;
-  const settings: AppSettings = {
-    ...DEFAULT_SETTINGS,
-    ...(stored ?? {}),
-    unlockMethods: {
-      ...DEFAULT_SETTINGS.unlockMethods,
-      ...(stored?.unlockMethods ?? {}),
+  const settings: AppSettings = withBackupModeMigration(
+    {
+      ...DEFAULT_SETTINGS,
+      ...(stored ?? {}),
+      unlockMethods: {
+        ...DEFAULT_SETTINGS.unlockMethods,
+        ...(stored?.unlockMethods ?? {}),
+      },
     },
-  };
+    stored,
+  );
 
   useEffect(() => {
     if (!result) return;

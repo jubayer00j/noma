@@ -1,3 +1,4 @@
+import { Capacitor } from "@capacitor/core";
 import {
   AlertTriangle,
   Check,
@@ -7,7 +8,7 @@ import {
   RefreshCw,
   ShieldCheck,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -28,9 +29,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { applyBackup, type BackupPayload, recordBackup } from "@/lib/noma/backup";
+import {
+  BACKUP_INTERVAL_PRESETS,
+  clampBackupIntervalMinutes,
+  nextScheduledBackupAt,
+} from "@/lib/noma/backup-scheduler";
 import { useAuth } from "@/lib/noma/auth";
 import { useDatabase } from "@/lib/noma/DatabaseContext";
 import {
@@ -40,13 +46,13 @@ import {
   disconnectDrive,
   fetchDriveBackup,
   getConnection,
-  hasUnbackedChanges,
   librarySignature,
   listDriveBackups,
   type DriveBackupFile,
   type DriveConnection,
   isDriveConfigured,
 } from "@/lib/noma/drive";
+import type { BackupMode } from "@/lib/noma/types";
 
 type Status =
   | { kind: "idle" }
@@ -71,17 +77,50 @@ function formatSize(bytes: number | null): string | null {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function nextDueLabel(lastBackupAt: number | null, intervalMinutes: number): string {
+  if (!lastBackupAt) return "First backup due now";
+  const next = nextScheduledBackupAt(lastBackupAt, intervalMinutes);
+  if (!next || next <= Date.now()) return "Backup due now";
+  const minutes = Math.round((next - Date.now()) / 60_000);
+  if (minutes < 60) return `Next backup in ${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `Next backup in ${hours} hour${hours === 1 ? "" : "s"}`;
+  return `Next backup ${new Date(next).toLocaleDateString()}`;
+}
+
+const MODE_OPTIONS: Array<{ value: BackupMode; title: string; description: string }> = [
+  {
+    value: "off",
+    title: "Off",
+    description: "Backups only happen when you tap Backup now.",
+  },
+  {
+    value: "sync",
+    title: "Auto sync",
+    description: "Backs up shortly after you change a note, whenever you're online.",
+  },
+  {
+    value: "scheduled",
+    title: "Scheduled",
+    description: "Backs up on a timer you choose — the way WhatsApp does it.",
+  },
+];
+
 const fade = "animate-in fade-in slide-in-from-bottom-1 duration-300 motion-reduce:animate-none";
 const tap =
   "transition-transform active:scale-[0.99] motion-reduce:transition-none motion-reduce:active:scale-100";
 
 export function DriveCard({
-  autoBackup,
-  onAutoBackupChange,
+  backupMode,
+  backupIntervalMinutes,
+  onBackupModeChange,
+  onBackupIntervalChange,
   onRestored,
 }: {
-  autoBackup: boolean;
-  onAutoBackupChange: (value: boolean) => void;
+  backupMode: BackupMode;
+  backupIntervalMinutes: number;
+  onBackupModeChange: (mode: BackupMode) => void;
+  onBackupIntervalChange: (minutes: number) => void;
   onRestored?: () => void;
 }) {
   const auth = useAuth();
@@ -110,7 +149,24 @@ export function DriveCard({
   );
   const [confirmReplace, setConfirmReplace] = useState(false);
   const [restoring, setRestoring] = useState(false);
-  const autoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [customOpen, setCustomOpen] = useState(
+    () => !BACKUP_INTERVAL_PRESETS.some((preset) => preset.minutes === backupIntervalMinutes),
+  );
+  const [customValue, setCustomValue] = useState(() =>
+    backupIntervalMinutes % 1440 === 0
+      ? String(backupIntervalMinutes / 1440)
+      : String(Math.max(1, Math.round(backupIntervalMinutes / 60))),
+  );
+  const [customUnit, setCustomUnit] = useState<"hours" | "days">(() =>
+    backupIntervalMinutes % 1440 === 0 ? "days" : "hours",
+  );
+
+  // Whoever ran a backup (this card, the scheduler), show its result here.
+  useEffect(() => {
+    const refresh = () => setConnection(getConnection(auth.user?.uid ?? null));
+    window.addEventListener("noma:backup-completed", refresh);
+    return () => window.removeEventListener("noma:backup-completed", refresh);
+  }, [auth.user?.uid]);
 
   const handleFailure = useCallback((error: unknown, label: string) => {
     const message = error instanceof Error ? error.message : label;
@@ -139,27 +195,6 @@ export function DriveCard({
     },
     [handleFailure, db, auth.user?.uid],
   );
-
-  // Automatic backup: batched, and skipped entirely when nothing changed.
-  useEffect(() => {
-    if (!autoBackup || !connection || needsReconnect) return;
-    let cancelled = false;
-    const tick = async () => {
-      if (cancelled || (typeof navigator !== "undefined" && !navigator.onLine)) return;
-      try {
-        if (await hasUnbackedChanges(db!, auth.user?.uid ?? null)) await runBackup(true);
-      } catch {
-        /* auto-backup never interrupts writing */
-      }
-    };
-    autoTimer.current = setTimeout(() => void tick(), 60_000);
-    const interval = setInterval(() => void tick(), 15 * 60_000);
-    return () => {
-      cancelled = true;
-      if (autoTimer.current) clearTimeout(autoTimer.current);
-      clearInterval(interval);
-    };
-  }, [autoBackup, connection, needsReconnect, runBackup, db, auth.user?.uid]);
 
   async function handleConnect() {
     setConnecting(true);
@@ -372,16 +407,158 @@ export function DriveCard({
       </div>
 
       {connection && !needsReconnect && (
-        <div
-          className={`mt-5 flex items-center justify-between gap-4 border-t border-border pt-4 ${fade}`}
-        >
-          <div>
-            <Label htmlFor="noma-auto-backup">Automatic backup</Label>
-            <p className="text-xs text-muted-foreground">
-              Uploads after meaningful changes only — never continuously, and never while you type.
-            </p>
+        <div className={`mt-5 border-t border-border pt-4 ${fade}`}>
+          <div className="flex items-baseline justify-between gap-4">
+            <Label>Automatic backup</Label>
+            {backupMode === "scheduled" && (
+              <span className="text-xs text-muted-foreground">
+                {nextDueLabel(connection.lastBackupAt, backupIntervalMinutes)}
+              </span>
+            )}
           </div>
-          <Switch id="noma-auto-backup" checked={autoBackup} onCheckedChange={onAutoBackupChange} />
+
+          <div className="mt-3 grid gap-2" role="radiogroup" aria-label="Automatic backup mode">
+            {MODE_OPTIONS.map((option) => {
+              const active = backupMode === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => onBackupModeChange(option.value)}
+                  className={`flex items-start gap-3 rounded-xl border p-3 text-left transition-colors ${tap} ${
+                    active
+                      ? "border-primary/50 bg-primary/5"
+                      : "border-border hover:bg-accent/50"
+                  }`}
+                >
+                  <span
+                    className={`mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border ${
+                      active ? "border-primary" : "border-muted-foreground/40"
+                    }`}
+                    aria-hidden="true"
+                  >
+                    {active && <span className="size-2 rounded-full bg-primary" />}
+                  </span>
+                  <span>
+                    <span className="block text-sm font-medium">{option.title}</span>
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                      {option.description}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {backupMode === "scheduled" && (
+            <div className="animate-in fade-in duration-200 motion-reduce:animate-none">
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {BACKUP_INTERVAL_PRESETS.map((preset) => {
+                  const active = !customOpen && backupIntervalMinutes === preset.minutes;
+                  return (
+                    <button
+                      key={preset.minutes}
+                      type="button"
+                      onClick={() => {
+                        setCustomOpen(false);
+                        onBackupIntervalChange(preset.minutes);
+                      }}
+                      className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${tap} ${
+                        active
+                          ? "border-primary/50 bg-primary/10 text-foreground"
+                          : "border-border text-muted-foreground hover:bg-accent/50"
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomUnit(backupIntervalMinutes % 1440 === 0 ? "days" : "hours");
+                    setCustomValue(
+                      backupIntervalMinutes % 1440 === 0
+                        ? String(backupIntervalMinutes / 1440)
+                        : String(Math.max(1, Math.round(backupIntervalMinutes / 60))),
+                    );
+                    setCustomOpen(true);
+                  }}
+                  className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${tap} ${
+                    customOpen
+                      ? "border-primary/50 bg-primary/10 text-foreground"
+                      : "border-border text-muted-foreground hover:bg-accent/50"
+                  }`}
+                >
+                  Custom
+                </button>
+              </div>
+
+              {customOpen && (
+                <div className="mt-3 animate-in fade-in duration-200 motion-reduce:animate-none">
+                  <div className="flex items-end gap-2">
+                    <div className="w-24">
+                      <Label htmlFor="noma-custom-backup-value" className="text-xs">
+                        Every
+                      </Label>
+                      <Input
+                        id="noma-custom-backup-value"
+                        type="number"
+                        min={1}
+                        max={720}
+                        value={customValue}
+                        onChange={(event) => setCustomValue(event.target.value)}
+                        className="mt-1 h-9"
+                      />
+                    </div>
+                    <select
+                      aria-label="Custom backup interval unit"
+                      value={customUnit}
+                      onChange={(event) => setCustomUnit(event.target.value as "hours" | "days")}
+                      className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                    >
+                      <option value="hours">hours</option>
+                      <option value="days">days</option>
+                    </select>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-9"
+                      onClick={() => {
+                        const parsed = Number.parseInt(customValue, 10);
+                        if (!Number.isFinite(parsed) || parsed < 1) return;
+                        onBackupIntervalChange(
+                          clampBackupIntervalMinutes(parsed * (customUnit === "days" ? 1440 : 60)),
+                        );
+                      }}
+                    >
+                      Set
+                    </Button>
+                  </div>
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    Between 1 hour and 30 days.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {backupMode === "sync" && (
+            <p className="mt-3 text-xs text-muted-foreground">
+              Changes upload about 15 seconds after you stop editing. Anything pending uploads
+              as soon as you're back online or reopen Noma — and only when something actually
+              changed.
+            </p>
+          )}
+          {backupMode === "scheduled" && (
+            <p className="mt-3 text-xs text-muted-foreground">
+              {Capacitor.isNativePlatform()
+                ? "Noma runs the backup whenever it's open and the timer is due — and the schedule is registered with Android too, so if a backup falls due while the app is closed you'll get a gentle reminder to open Noma and finish it."
+                : "Backups run while Noma is open; anything overdue runs as soon as you open it."}
+            </p>
+          )}
         </div>
       )}
 

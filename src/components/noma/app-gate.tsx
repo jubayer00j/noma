@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from "react";
+import { BackupSchedulerMount } from "./backup-scheduler-mount";
 import { BootScreen } from "./boot-screen";
 import { VerifyEmail } from "./verify-email";
 import { Welcome } from "./welcome";
@@ -55,10 +56,18 @@ function AppGateContent({ children }: { children: ReactNode }) {
   }
 
   if (isLocked) {
-    return <LockScreen />;
+    return (
+      <>
+        <BackupSchedulerMount />
+        <LockScreen />
+      </>
+    );
   }
 
   return (
-    <div className="animate-in fade-in duration-200 motion-reduce:animate-none">{children}</div>
+    <>
+      <BackupSchedulerMount />
+      <div className="animate-in fade-in duration-200 motion-reduce:animate-none">{children}</div>
+    </>
   );
 }
