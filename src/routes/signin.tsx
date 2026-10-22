@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { AppGate } from "@/components/noma/app-gate";
 import { AuthScreen } from "@/components/noma/auth-screen";
+import { BootScreen } from "@/components/noma/boot-screen";
 import { useAuth } from "@/lib/noma/auth";
 
 export const Route = createFileRoute("/signin")({
@@ -33,9 +34,7 @@ function SignInPage() {
   if (auth.user) {
     return (
       <AppGate>
-        <div className="flex min-h-dvh items-center justify-center bg-background">
-          <p className="text-sm text-muted-foreground">Opening Noma…</p>
-        </div>
+        <BootScreen />
       </AppGate>
     );
   }

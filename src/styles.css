@@ -674,3 +674,30 @@
 .animate-noma-shake {
   animation: noma-shake 0.5s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
 }
+
+/* Boot screen: a slow, calm breathing scale for the brand mark. */
+@keyframes noma-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.045);
+  }
+}
+.animate-noma-breathe {
+  animation: noma-breathe 2.4s ease-in-out infinite;
+}
+
+/* Boot screen: an indeterminate progress segment sliding across its track. */
+@keyframes noma-progress {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+.animate-noma-progress {
+  animation: noma-progress 1.4s ease-in-out infinite;
+}
