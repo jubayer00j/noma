@@ -97,6 +97,13 @@ export interface BackupSchedulerDeps {
   ownerId: string | null;
   getConfig: () => BackupSchedulerConfig;
   onStateChange?: (state: BackupSchedulerState) => void;
+  /**
+   * Android scheduled mode only: build + stage the backup ZIP natively so
+   * the background worker can upload it while the app is closed. Called
+   * when changes settle, as the app backgrounds, and once at start. The
+   * implementation skips work when the staged copy is already current.
+   */
+  stageSnapshot?: () => Promise<void>;
 }
 
 /** Quiet period after the last edit before a sync-mode upload (batches typing bursts). */
@@ -111,7 +118,19 @@ export function startBackupScheduler(deps: BackupSchedulerDeps): () => void {
   let dirty = false;
   let pending = false;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let stageTimer: ReturnType<typeof setTimeout> | null = null;
   let lastReported = "";
+
+  const stage = () => {
+    if (!deps.stageSnapshot || deps.getConfig().mode !== "scheduled") return;
+    void deps.stageSnapshot();
+  };
+
+  const scheduleStage = () => {
+    if (!deps.stageSnapshot || deps.getConfig().mode !== "scheduled") return;
+    if (stageTimer) clearTimeout(stageTimer);
+    stageTimer = setTimeout(stage, SYNC_DEBOUNCE_MS);
+  };
 
   const report = () => {
     if (!deps.onStateChange) return;
@@ -183,6 +202,7 @@ export function startBackupScheduler(deps: BackupSchedulerDeps): () => void {
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => void attempt(), SYNC_DEBOUNCE_MS);
     }
+    scheduleStage();
   };
 
   // Dirty tracking: every write to a backed-up table counts. Restore/import
@@ -198,10 +218,18 @@ export function startBackupScheduler(deps: BackupSchedulerDeps): () => void {
   const onVisibility = () => {
     if (document.visibilityState === "visible") {
       void attempt();
-    } else if (deps.getConfig().mode === "sync" && dirty) {
-      // Best-effort flush as the app goes to the background.
-      if (debounceTimer) clearTimeout(debounceTimer);
-      void attempt();
+    } else {
+      if (deps.getConfig().mode === "sync" && dirty) {
+        // Best-effort flush as the app goes to the background.
+        if (debounceTimer) clearTimeout(debounceTimer);
+        void attempt();
+      }
+      if (dirty) {
+        // Keep the staged snapshot fresh for the background worker — this
+        // is the last reliable moment before the app may be killed.
+        if (stageTimer) clearTimeout(stageTimer);
+        stage();
+      }
     }
   };
   window.addEventListener("online", onOnline);
@@ -210,12 +238,14 @@ export function startBackupScheduler(deps: BackupSchedulerDeps): () => void {
   const startTimer = setTimeout(() => {
     report();
     void attempt();
+    stage();
   }, 2_000);
   report();
 
   return () => {
     stopped = true;
     if (debounceTimer) clearTimeout(debounceTimer);
+    if (stageTimer) clearTimeout(stageTimer);
     clearTimeout(startTimer);
     clearInterval(tick);
     window.removeEventListener("online", onOnline);

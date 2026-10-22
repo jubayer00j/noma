@@ -754,3 +754,30 @@ export async function hasUnbackedChanges(
   if (!connection.backupFileId || !connection.lastBackupAt) return true;
   return (await librarySignature(db)) !== connection.lastSignature;
 }
+
+/**
+ * Adopts a backup the Android background worker uploaded silently: when the
+ * worker's uploaded snapshot is exactly the current library (signature
+ * match) and it is newer than what this layer last recorded, the connection
+ * record is advanced so `hasUnbackedChanges` and the Settings "last backup"
+ * display tell the truth. Anything else — a fresher web backup, a library
+ * that has moved on — is left untouched. Returns true when it patched.
+ */
+export async function reconcileNativeBackup(
+  db: import("./db").NomaDatabase,
+  ownerId: string | null,
+  native: { lastBackupAt: number; signature: string },
+): Promise<boolean> {
+  const connection = getConnection(ownerId);
+  if (!connection || !native.lastBackupAt || !native.signature) return false;
+  if ((connection.lastBackupAt ?? 0) >= native.lastBackupAt) return false;
+  if ((await librarySignature(db)) !== native.signature) return false;
+  patchConnection(ownerId, {
+    lastBackupAt: native.lastBackupAt,
+    lastSignature: native.signature,
+  });
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("noma:backup-completed"));
+  }
+  return true;
+}
