@@ -170,7 +170,7 @@ public class BackupDueWorker extends Worker {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new TransientFailure();
-        } catch (NeedsUserAction | TransientFailure e) {
+        } catch (NeedsUserAction e) {
             throw e;
         } catch (Exception e) {
             throw new NeedsUserAction();
@@ -180,7 +180,7 @@ public class BackupDueWorker extends Worker {
     // ------------------------------------------------------------ Drive
 
     private String uploadBackup(Context context, SharedPreferences prefs, String token, File staged)
-            throws Exception {
+            throws Unauthorized, TransientFailure, Exception {
         String folderId = prefs.getString(NomaBackgroundBackupPlugin.KEY_FOLDER_ID, null);
         if (folderId == null || folderId.isEmpty() || !exists(token, folderId)) {
             folderId = findOrCreateFolder(token);
@@ -200,7 +200,7 @@ public class BackupDueWorker extends Worker {
         return createFile(token, folderId, staged);
     }
 
-    private boolean exists(String token, String fileId) throws Exception {
+    private boolean exists(String token, String fileId) throws Unauthorized, TransientFailure, Exception {
         HttpURLConnection conn = open(new URL(API + "/files/" + fileId + "?fields=id,trashed"), token, "GET");
         try {
             int code = conn.getResponseCode();
@@ -215,7 +215,7 @@ public class BackupDueWorker extends Worker {
         }
     }
 
-    private String findOrCreateFolder(String token) throws Exception {
+    private String findOrCreateFolder(String token) throws Unauthorized, TransientFailure, Exception {
         String query = "name='" + FOLDER_NAME + "' and mimeType='application/vnd.google-apps.folder' and trashed=false";
         JSONObject found = listFiles(token, query);
         JSONArray files = found.optJSONArray("files");
@@ -241,7 +241,7 @@ public class BackupDueWorker extends Worker {
         return id;
     }
 
-    private String findCanonicalFile(String token, String folderId) throws Exception {
+    private String findCanonicalFile(String token, String folderId) throws Unauthorized, TransientFailure, Exception {
         String query = "name='" + CANONICAL_NAME + "' and '" + folderId + "' in parents and trashed=false";
         JSONObject found = listFiles(token, query);
         JSONArray files = found.optJSONArray("files");
@@ -251,7 +251,7 @@ public class BackupDueWorker extends Worker {
         return null;
     }
 
-    private JSONObject listFiles(String token, String query) throws Exception {
+    private JSONObject listFiles(String token, String query) throws Unauthorized, TransientFailure, Exception {
         String url = API + "/files?q=" + URLEncoder.encode(query, "UTF-8") + "&fields=files(id,createdTime)";
         HttpURLConnection conn = open(new URL(url), token, "GET");
         try {
@@ -265,7 +265,7 @@ public class BackupDueWorker extends Worker {
         }
     }
 
-    private void patchFile(String token, String fileId, File staged) throws Exception {
+    private void patchFile(String token, String fileId, File staged) throws Unauthorized, TransientFailure, Exception {
         HttpURLConnection conn = open(
                 new URL(UPLOAD_API + "/files/" + fileId + "?uploadType=media&fields=id"), token, "PATCH");
         conn.setRequestProperty("Content-Type", "application/zip");
@@ -280,7 +280,7 @@ public class BackupDueWorker extends Worker {
         if (code != 200) throw new Exception("Upload failed: " + code);
     }
 
-    private String createFile(String token, String folderId, File staged) throws Exception {
+    private String createFile(String token, String folderId, File staged) throws Unauthorized, TransientFailure, Exception {
         String boundary = "noma" + System.currentTimeMillis();
         JSONObject metadata = new JSONObject();
         metadata.put("name", CANONICAL_NAME);
