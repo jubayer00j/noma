@@ -8,6 +8,8 @@ import {
   Copy,
   FolderInput,
   Image as ImageIcon,
+  Lock,
+  LockOpen,
   MoreHorizontal,
   NotebookPen,
   Pin,
@@ -49,6 +51,8 @@ export interface NoteActions {
   trash: (note: Note) => void;
   restore: (note: Note) => void;
   deleteForever: (note: Note) => void;
+  /** Opens the per-note lock setup dialog (unlocked notes only). */
+  lockNote?: (note: Note) => void;
 }
 
 interface NoteListProps {
@@ -103,8 +107,9 @@ const NoteItem = memo(function NoteItem({
   isPhoneAlarm,
 }: NoteItemProps) {
   const title = noteTitle(note);
+  const locked = Boolean(note.lock);
   const preview = notePreview(note);
-  const hasAttachments = note.content.includes("noma-attachment://");
+  const hasAttachments = !locked && note.content.includes("noma-attachment://");
   const noteTags = note.tagIds.filter((id) => tagNameMap.has(id)).slice(0, 3);
   // Cheap, deterministic fingerprint (tiny string hash); the memoised component
   // only recomputes it when its props change, so long lists stay fast.
@@ -128,6 +133,9 @@ const NoteItem = memo(function NoteItem({
           className="block w-full min-w-0 rounded-xl p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:p-5"
         >
           <div className="flex items-center gap-2 pr-9">
+            {locked && (
+              <Lock className="size-3.5 shrink-0 text-primary" aria-label="Locked note" />
+            )}
             {note.pinned && (
               <Pin className="size-3.5 shrink-0 text-muted-foreground" aria-label="Pinned" />
             )}
@@ -154,9 +162,16 @@ const NoteItem = memo(function NoteItem({
             )}
             <h3 className="truncate font-serif text-[17px] font-medium tracking-tight">{title}</h3>
           </div>
-          <p className="mt-1.5 line-clamp-2 pr-9 text-sm leading-relaxed text-muted-foreground">
-            {preview || "Empty note"}
-          </p>
+          {locked ? (
+            <p className="mt-1.5 flex items-center gap-1.5 pr-9 text-sm text-muted-foreground">
+              <Lock className="size-3.5 shrink-0" aria-hidden="true" />
+              Locked note — unlock to read
+            </p>
+          ) : (
+            <p className="mt-1.5 line-clamp-2 pr-9 text-sm leading-relaxed text-muted-foreground">
+              {preview || "Empty note"}
+            </p>
+          )}
           <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground">
             <span className="tabular-nums">
               {formatDistanceToNowStrict(note.updatedAt, { addSuffix: true })}
@@ -226,6 +241,17 @@ const NoteItem = memo(function NoteItem({
                   <DropdownMenuItem onClick={() => actions.duplicate(note)}>
                     <Copy className="size-4" /> Duplicate
                   </DropdownMenuItem>
+                  {locked ? (
+                    <DropdownMenuItem onClick={() => actions.open(note)}>
+                      <LockOpen className="size-4" /> Unlock note
+                    </DropdownMenuItem>
+                  ) : (
+                    actions.lockNote && (
+                      <DropdownMenuItem onClick={() => actions.lockNote?.(note)}>
+                        <Lock className="size-4" /> Lock note
+                      </DropdownMenuItem>
+                    )
+                  )}
                   <DropdownMenuSub>
                     <DropdownMenuSubTrigger>
                       <FolderInput className="size-4" /> Move to

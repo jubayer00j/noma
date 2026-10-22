@@ -23,7 +23,9 @@ export function searchNotes(
   const results: SearchResult[] = [];
   for (const note of notes) {
     const title = note.title.toLowerCase();
-    const body = htmlToPlainText(note.content).toLowerCase();
+    // Locked notes are title-only: their sealed body is never searched and
+    // never appears in a snippet.
+    const body = note.lock ? "" : htmlToPlainText(note.content).toLowerCase();
     const haystackTags = note.tagIds.map((id) => tagName.get(id) ?? "").join(" ");
     const haystackFolder = note.folderId ? (folderName.get(note.folderId) ?? "") : "";
 
@@ -41,8 +43,9 @@ export function searchNotes(
     if (!matchedAll) continue;
 
     const idx = body.indexOf(terms[0]!);
-    const snippet =
-      idx >= 0
+    const snippet = note.lock
+      ? ""
+      : idx >= 0
         ? `${idx > 30 ? "…" : ""}${body.slice(Math.max(0, idx - 30), idx + 110)}…`
         : htmlToPlainText(note.content).slice(0, 120);
     results.push({ note, score, snippet });

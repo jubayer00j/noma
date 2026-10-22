@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { useDatabase } from "@/lib/noma/DatabaseContext";
 import { sanitizeHtml } from "@/lib/noma/sanitize";
 import { ChartRenderer, parseChartElement } from "./chart-node";
+import { useNoteSessionAttachments } from "./note-session-context";
 
 /**
  * Static read renderer for note content. Renders the already-sanitized stored
@@ -22,6 +23,9 @@ import { ChartRenderer, parseChartElement } from "./chart-node";
  */
 export function NoteReadContent({ content }: { content: string }) {
   const { db } = useDatabase();
+  // Decrypted payloads for a locked note open in an unlocked session; its
+  // attachment rows hold ciphertext, so the session map wins when present.
+  const sessionAttachments = useNoteSessionAttachments();
   const html = useMemo(() => sanitizeHtml(content || ""), [content]);
   const containerRef = useRef<HTMLDivElement>(null);
   // Chart React roots, keyed by host element. Kept across effect re-runs so a
@@ -70,8 +74,9 @@ export function NoteReadContent({ content }: { content: string }) {
         const attachmentId = src.replace("noma-attachment://", "");
         db.attachments.get(attachmentId).then((att) => {
           if (!active) return;
-          if (att?.data) {
-            img.setAttribute("src", att.data);
+          const data = att?.encrypted ? sessionAttachments?.get(attachmentId) : att?.data;
+          if (data) {
+            img.setAttribute("src", data);
             img.setAttribute("data-noma-resolved", "");
           }
         });
@@ -105,7 +110,7 @@ export function NoteReadContent({ content }: { content: string }) {
     return () => {
       active = false;
     };
-  }, [html, db]);
+  }, [html, db, sessionAttachments]);
 
   // Final cleanup when the read view unmounts (e.g. navigating between notes).
   useEffect(
