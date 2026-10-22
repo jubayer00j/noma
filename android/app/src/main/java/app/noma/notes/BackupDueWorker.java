@@ -79,6 +79,13 @@ public class BackupDueWorker extends Worker {
         long intervalMinutes = prefs.getLong(NomaBackgroundBackupPlugin.KEY_INTERVAL_MINUTES, 0);
         if (intervalMinutes <= 0) return Result.success();
 
+        // Hard gate: no live Drive connection, no uploads — ever. The web
+        // layer clears this flag (and the staged archive) the moment the
+        // user disconnects Drive or the account changes.
+        if (!prefs.getBoolean(NomaBackgroundBackupPlugin.KEY_CONNECTION_ACTIVE, false)) {
+            return Result.success();
+        }
+
         long nextDueAt = prefs.getLong(NomaBackgroundBackupPlugin.KEY_NEXT_DUE_AT, 0);
         long now = System.currentTimeMillis();
         if (nextDueAt > 0 && now < nextDueAt) return Result.success();

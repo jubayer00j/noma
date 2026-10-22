@@ -32,6 +32,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { applyBackup, type BackupPayload, recordBackup } from "@/lib/noma/backup";
+import { resetNativeBackupState } from "@/lib/noma/background-backup";
 import {
   BACKUP_INTERVAL_PRESETS,
   clampBackupIntervalMinutes,
@@ -737,6 +738,9 @@ export function DriveCard({
             <AlertDialogAction
               onClick={async () => {
                 await disconnectDrive(auth.user?.uid ?? null);
+                // The background worker must never upload to a disconnected
+                // account: wipe its staged archive and deactivate it.
+                await resetNativeBackupState();
                 setConnection(null);
                 setNeedsReconnect(false);
                 setStatus({ kind: "idle" });

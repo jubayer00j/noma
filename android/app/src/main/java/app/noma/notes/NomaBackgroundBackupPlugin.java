@@ -48,6 +48,10 @@ public class NomaBackgroundBackupPlugin extends Plugin {
     public static final String KEY_LAST_UPLOADED_SIGNATURE = "lastUploadedSignature";
     public static final String KEY_FOLDER_ID = "folderId";
     public static final String KEY_BACKUP_FILE_ID = "backupFileId";
+    /** True only while a live Drive connection backs the staged state. The
+     *  worker refuses to run without it — disconnecting Drive (or signing
+     *  out) resets it, so a disconnected account can never receive uploads. */
+    public static final String KEY_CONNECTION_ACTIVE = "connectionActive";
     public static final String UNIQUE_WORK_NAME = "noma-backup-due";
     public static final String STAGED_FILE_NAME = "staged_backup.zip";
 
@@ -109,6 +113,7 @@ public class NomaBackgroundBackupPlugin extends Plugin {
         String backupFileId = call.getString("backupFileId");
         SharedPreferences.Editor editor = prefs().edit()
                 .putBoolean(KEY_PENDING_CHANGES, pending != null && pending)
+                .putBoolean(KEY_CONNECTION_ACTIVE, true)
                 .putLong(KEY_LAST_BACKUP_AT, lastBackupAt == null ? 0 : lastBackupAt.longValue())
                 .putLong(KEY_NEXT_DUE_AT, nextDueAt == null ? 0 : nextDueAt.longValue());
         if (folderId != null && !folderId.isEmpty()) editor.putString(KEY_FOLDER_ID, folderId);
@@ -135,7 +140,8 @@ public class NomaBackgroundBackupPlugin extends Plugin {
             stageStreams.put(sessionId, new FileOutputStream(temp));
             stageTempFiles.put(sessionId, temp);
             stageSignatures.put(sessionId, signature == null ? "" : signature);
-            SharedPreferences.Editor editor = prefs().edit();
+            SharedPreferences.Editor editor = prefs().edit()
+                    .putBoolean(KEY_CONNECTION_ACTIVE, true);
             if (folderId != null && !folderId.isEmpty()) editor.putString(KEY_FOLDER_ID, folderId);
             if (backupFileId != null && !backupFileId.isEmpty()) {
                 editor.putString(KEY_BACKUP_FILE_ID, backupFileId);
@@ -218,6 +224,51 @@ public class NomaBackgroundBackupPlugin extends Plugin {
                 temp.delete();
             }
         }
+        call.resolve();
+    }
+
+    /**
+     * Explicit reset for "Drive was disconnected / the account changed":
+     * deletes the staged archive and every piece of connection-derived
+     * state, and marks the connection inactive so the worker cannot upload
+     * anything until a live connection stages fresh state again. The
+     * schedule itself (interval + WorkManager registration) is kept — it
+     * belongs to the user's settings, not to the connection.
+     */
+    @PluginMethod
+    public void resetBackupState(PluginCall call) {
+        // Drop any in-flight staging sessions and their temp files.
+        for (Map.Entry<String, FileOutputStream> entry : stageStreams.entrySet()) {
+            try {
+                entry.getValue().close();
+            } catch (IOException ignored) {
+            }
+            File temp = stageTempFiles.get(entry.getKey());
+            if (temp != null) {
+                //noinspection ResultOfMethodCallIgnored
+                temp.delete();
+            }
+        }
+        stageStreams.clear();
+        stageTempFiles.clear();
+        stageSignatures.clear();
+
+        File staged = stagedFile(getContext());
+        if (staged.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            staged.delete();
+        }
+        prefs().edit()
+                .putBoolean(KEY_CONNECTION_ACTIVE, false)
+                .putBoolean(KEY_PENDING_CHANGES, false)
+                .putLong(KEY_LAST_BACKUP_AT, 0)
+                .putLong(KEY_NEXT_DUE_AT, 0)
+                .putString(KEY_STAGED_SIGNATURE, "")
+                .putLong(KEY_STAGED_AT, 0)
+                .putString(KEY_LAST_UPLOADED_SIGNATURE, "")
+                .putString(KEY_FOLDER_ID, "")
+                .putString(KEY_BACKUP_FILE_ID, "")
+                .apply();
         call.resolve();
     }
 

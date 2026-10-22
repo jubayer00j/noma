@@ -21,6 +21,7 @@ import type { BackupMode } from "./types";
 interface NomaBackgroundBackupPlugin {
   setSchedule(options: { intervalMinutes: number }): Promise<void>;
   cancelSchedule(): Promise<void>;
+  resetBackupState(): Promise<void>;
   reportState(options: {
     pendingChanges: boolean;
     lastBackupAt: number;
@@ -63,21 +64,47 @@ export async function syncNativeBackupSchedule(
   }
 }
 
+let nativeStateResetDone = false;
+
+/**
+ * Wipes the native backup state (staged archive, Drive IDs, pending flags)
+ * and deactivates the background worker. Must happen whenever Drive is
+ * disconnected or the account changes: without it, the worker would keep
+ * a disconnected account's staged backup and could still upload it.
+ * Idempotent; safe to call repeatedly.
+ */
+export async function resetNativeBackupState(): Promise<void> {
+  if (!isAndroid()) return;
+  try {
+    await NativeBackgroundBackup.resetBackupState();
+    nativeStateResetDone = true;
+  } catch {
+    /* best-effort */
+  }
+}
+
 export async function reportNativeBackupState(
   state: BackupSchedulerState,
   ownerId: string | null,
 ): Promise<void> {
   if (!isAndroid()) return;
   try {
+    // No live connection means the native state belongs to a connection
+    // that no longer exists — reset it instead of refreshing it.
+    const connection = getConnection(ownerId);
+    if (!connection) {
+      if (!nativeStateResetDone) await resetNativeBackupState();
+      return;
+    }
+    nativeStateResetDone = false;
     // The Drive folder/file IDs the worker needs ride along with each
     // report, read fresh from the connection record.
-    const connection = getConnection(ownerId);
     await NativeBackgroundBackup.reportState({
       pendingChanges: state.pendingChanges,
       lastBackupAt: state.lastBackupAt ?? 0,
       nextDueAt: state.nextDueAt ?? 0,
-      folderId: connection?.folderId ?? null,
-      backupFileId: connection?.backupFileId ?? null,
+      folderId: connection.folderId,
+      backupFileId: connection.backupFileId,
     });
   } catch {
     /* see above */
