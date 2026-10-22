@@ -138,8 +138,15 @@ export async function buildBackupZip(
       ),
     );
     for (const attachment of payload.attachments) {
-      const base64 = attachment.data.split(",")[1] ?? "";
-      attachmentsFolder.file(`${attachment.id}-${attachment.name}`, base64, { base64: true });
+      if (attachment.encrypted) {
+        // Locked-note attachment: `data` is an encryption envelope, not a
+        // data URL. Store it verbatim; the `<id>.json` record (used on
+        // import) carries the same envelope.
+        attachmentsFolder.file(`${attachment.id}-${attachment.name}.encrypted`, attachment.data);
+      } else {
+        const base64 = attachment.data.split(",")[1] ?? "";
+        attachmentsFolder.file(`${attachment.id}-${attachment.name}`, base64, { base64: true });
+      }
       attachmentsFolder.file(`${attachment.id}.json`, JSON.stringify(attachment, null, 2));
     }
   }
@@ -206,7 +213,11 @@ export async function readBackupZip(
     try {
       const note = JSON.parse(await noteFile.async("string")) as Note;
       if (note?.id && typeof note.content === "string") {
-        notes.push({ ...note, content: sanitizeHtml(note.content), tagIds: note.tagIds ?? [] });
+        // Locked notes carry an encryption envelope as content — running it
+        // through the HTML sanitizer would destroy it. They stay sealed and
+        // keep the credentials from the backup.
+        const content = note.lock ? note.content : sanitizeHtml(note.content);
+        notes.push({ ...note, content, tagIds: note.tagIds ?? [] });
       }
     } catch {
       // Skip individual unreadable notes rather than failing the whole import.

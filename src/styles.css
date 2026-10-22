@@ -650,3 +650,27 @@
 .notes-list-surface[hidden] {
   display: none;
 }
+
+/* Credential prompt feedback: a short horizontal shake on a wrong entry. */
+@keyframes noma-shake {
+  10%,
+  90% {
+    transform: translateX(-1px);
+  }
+  20%,
+  80% {
+    transform: translateX(2px);
+  }
+  30%,
+  50%,
+  70% {
+    transform: translateX(-5px);
+  }
+  40%,
+  60% {
+    transform: translateX(5px);
+  }
+}
+.animate-noma-shake {
+  animation: noma-shake 0.5s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}

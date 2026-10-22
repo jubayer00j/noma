@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   Check,
   Hash,
+  Lock,
   Menu,
   MoreHorizontal,
   PanelLeft,
@@ -28,6 +29,9 @@ import { useStableNotes } from "./use-stable-notes";
 import type { VirtualListHandle } from "./virtual-list";
 import { NotesListSurfaceContext } from "./notes-list-surface-context";
 import { PromptDialog, type PromptRequest } from "./prompt-dialog";
+import { NoteLockDialog } from "./note-lock-dialog";
+import { NoteLockGate } from "./note-lock-gate";
+import { NoteSessionAttachmentsContext } from "./note-session-context";
 import { ReminderDialog } from "./reminder-dialog";
 import { RemindersView } from "./reminders-view";
 import { NomaSidebar } from "./sidebar";
@@ -85,6 +89,7 @@ import {
   cleanupOrphanedReminders,
 } from "@/lib/noma/notes";
 import { highlightTerms, searchNotes } from "@/lib/noma/search";
+import { saveLockedNoteContent, type UnlockedNoteData } from "@/lib/noma/note-lock";
 import type { Folder, Note, Reminder, Tag } from "@/lib/noma/types";
 import { filterNotes, viewTitle, type ViewState } from "@/lib/noma/view";
 import { cn } from "@/lib/utils";
@@ -109,6 +114,8 @@ interface NoteOverflowMenuProps {
   onTrash: () => void;
   onRestore: () => void;
   onDeleteForever: () => void;
+  onLockNote: () => void;
+  onManageLock: () => void;
 }
 
 /**
@@ -128,6 +135,8 @@ function NoteOverflowMenu({
   onTrash,
   onRestore,
   onDeleteForever,
+  onLockNote,
+  onManageLock,
 }: NoteOverflowMenuProps) {
   return (
     <DropdownMenu>
@@ -186,6 +195,15 @@ function NoteOverflowMenu({
               {note.reminderAt ? "Edit Reminder" : "Set Reminder"}
             </DropdownMenuItem>
             <DropdownMenuItem onClick={onDuplicate}>Duplicate</DropdownMenuItem>
+            {note.lock ? (
+              <DropdownMenuItem onClick={onManageLock}>
+                <Lock className="size-4" /> Manage note lock
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem onClick={onLockNote}>
+                <Lock className="size-4" /> Lock note
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem onClick={onToggleArchive}>
               {note.archived ? "Unarchive" : "Archive"}
             </DropdownMenuItem>
@@ -216,6 +234,9 @@ interface WorkspaceSurfacesProps {
   phoneAlarmNoteIds: Set<string>;
   onOpenNote: (note: Note) => void;
   onNoteChange: (patch: { title?: string; content?: string }) => void;
+  /** Unlocked session for the open locked note (decrypted attachments). */
+  noteSession: { noteId: string; attachments: Map<string, string> } | null;
+  onUnlockNote: (nek: Uint8Array, data: UnlockedNoteData) => void;
   fontSize: number;
   editorWidth: number;
   lineHeight: number;
@@ -257,11 +278,17 @@ export function WorkspaceSurfaces({
   phoneAlarmNoteIds,
   onOpenNote,
   onNoteChange,
+  noteSession,
+  onUnlockNote,
   fontSize,
   editorWidth,
   lineHeight,
 }: WorkspaceSurfacesProps) {
   const noteOpen = activeNote != null;
+  const sessionForActive =
+    activeNote && noteSession?.noteId === activeNote.id ? noteSession : null;
+  /** A locked note without a live session shows the unlock gate, never content. */
+  const gateClosed = Boolean(activeNote?.lock) && !sessionForActive;
   // The list surface doubles as the virtualized list's scroll element, so
   // sibling views (reminders, loading skeletons) share the same scroller.
   // Published via state (not a ref object): the virtualizer is a child of
@@ -299,25 +326,33 @@ export function WorkspaceSurfaces({
     <>
       {activeNote ? (
         <div className="noma-scroll flex-1 overflow-y-auto" data-testid="note-surface">
-          {noteMode === "read" ? (
-            <NoteReadView
-              key={activeNote.id}
-              note={activeNote}
-              folders={allFolders}
-              tags={allTags}
-              fontSize={fontSize}
-              editorWidth={editorWidth}
-              lineHeight={lineHeight}
-            />
+          {gateClosed ? (
+            <NoteLockGate key={activeNote.id} note={activeNote} onUnlocked={onUnlockNote} />
           ) : (
-            <NoteEditor
-              key={activeNote.id}
-              note={activeNote}
-              onChange={onNoteChange}
-              fontSize={fontSize}
-              editorWidth={editorWidth}
-              lineHeight={lineHeight}
-            />
+            <NoteSessionAttachmentsContext.Provider
+              value={sessionForActive?.attachments ?? null}
+            >
+              {noteMode === "read" ? (
+                <NoteReadView
+                  key={activeNote.id}
+                  note={activeNote}
+                  folders={allFolders}
+                  tags={allTags}
+                  fontSize={fontSize}
+                  editorWidth={editorWidth}
+                  lineHeight={lineHeight}
+                />
+              ) : (
+                <NoteEditor
+                  key={activeNote.id}
+                  note={activeNote}
+                  onChange={onNoteChange}
+                  fontSize={fontSize}
+                  editorWidth={editorWidth}
+                  lineHeight={lineHeight}
+                />
+              )}
+            </NoteSessionAttachmentsContext.Provider>
           )}
         </div>
       ) : null}
@@ -396,6 +431,27 @@ export function Workspace() {
   const [prompt, setPrompt] = useState<PromptRequest | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [reminderTargetNote, setReminderTargetNote] = useState<Note | null>(null);
+  /**
+   * Unlocked session for the open locked note: its key and decrypted data,
+   * held in memory only. Cleared when the note closes, another note opens,
+   * or the app lock engages — the note re-locks at each of those points.
+   */
+  const [noteSession, setNoteSession] = useState<{
+    noteId: string;
+    nek: Uint8Array;
+    content: string;
+    attachments: Map<string, string>;
+  } | null>(null);
+  const noteSessionRef = useRef<typeof noteSession>(null);
+  noteSessionRef.current = noteSession;
+  const [lockDialog, setLockDialog] = useState<{ note: Note; mode: "setup" | "manage" } | null>(
+    null,
+  );
+
+  // When the app lock engages, any unlocked note session ends with it.
+  useEffect(() => {
+    if (isLocked) setNoteSession(null);
+  }, [isLocked]);
 
   useEffect(() => {
     if (db) {
@@ -428,14 +484,35 @@ export function Workspace() {
 
   const visibleNotes = useMemo(() => filterNotes(allNotes, view), [allNotes, view]);
   const storedNote = allNotes.find((note) => note.id === activeNoteId) ?? null;
-  const activeNote: Note | null =
-    storedNote && draft?.id === storedNote.id ? { ...storedNote, ...draft } : storedNote;
+  const sessionForStored =
+    storedNote && noteSession?.noteId === storedNote.id ? noteSession : null;
+  const activeNote: Note | null = storedNote
+    ? {
+        ...storedNote,
+        // In an unlocked session the surfaces see decrypted content; storage
+        // keeps the ciphertext. Draft edits overlay the decrypted content.
+        ...(sessionForStored ? { content: sessionForStored.content } : {}),
+        ...(draft?.id === storedNote.id ? draft : {}),
+      }
+    : null;
 
   const flushSave = useCallback(
     async (id: string, patch: { title?: string; content?: string }) => {
       if (!db) return;
       try {
-        await updateNote(db!, id, patch);
+        const stored = await db.notes.get(id);
+        const session = noteSessionRef.current;
+        if (stored?.lock && patch.content !== undefined) {
+          if (!session || session.noteId !== id) {
+            // Locked with no live session: refuse the write outright rather
+            // than risk plaintext landing over the ciphertext.
+            throw new Error("Note is locked.");
+          }
+          if (patch.title !== undefined) await updateNote(db, id, { title: patch.title });
+          await saveLockedNoteContent(db, stored, session.nek, patch.content);
+        } else {
+          await updateNote(db, id, patch);
+        }
         pendingSaveRef.current = null;
         setSaveState(navigator.onLine ? "saved" : "offline");
       } catch {
@@ -495,10 +572,34 @@ export function Workspace() {
     setDraft(null);
     setSaveState("idle");
     setActiveNoteId(note.id);
+    // Opening a different note ends the previous note's unlocked session.
+    setNoteSession((prev) => (prev && prev.noteId === note.id ? prev : null));
+    if (note.lock) {
+      // Locked notes land on the unlock gate (rendered by the surfaces).
+      setNoteMode("read");
+      setEditReturnTo("read");
+      return;
+    }
     const isEmpty = !note.title.trim() && !notePreview(note);
     setNoteMode(isEmpty ? "edit" : "read");
     setEditReturnTo(isEmpty ? "list" : "read");
   }, []);
+
+  /** Gate success: adopt the decrypted session and show the note. */
+  const handleNoteUnlocked = useCallback(
+    (nek: Uint8Array, data: UnlockedNoteData) => {
+      if (!activeNoteId) return;
+      setNoteSession({
+        noteId: activeNoteId,
+        nek,
+        content: data.content,
+        attachments: data.attachments,
+      });
+      setNoteMode("read");
+      setEditReturnTo("read");
+    },
+    [activeNoteId],
+  );
 
   /** Enter the editor for the currently open note (from the Read View). */
   const openNoteForEdit = useCallback(() => {
@@ -513,6 +614,8 @@ export function Workspace() {
     setSaveState("idle");
     setActiveNoteId(null);
     setNoteMode("read");
+    // Closing a note re-locks it: the decrypted session is dropped.
+    setNoteSession(null);
   }, [flushPendingSave]);
 
   /**
@@ -662,8 +765,14 @@ export function Workspace() {
         if (db) void setArchived(db, note, archived);
       },
       setReminder: (note) => setReminderTargetNote(note),
+      lockNote: (note) => setLockDialog({ note, mode: "setup" }),
       duplicate: async (note) => {
         if (!db) return;
+        if (note.lock) {
+          toast.info("Unlock this note first — then you can duplicate it.");
+          openNote(note);
+          return;
+        }
         const copy = await duplicateNote(db, note.id);
         if (copy) toast.success("Note duplicated");
       },
@@ -829,6 +938,8 @@ export function Workspace() {
       onMoveToFolder={(folderId) => void moveNote(db!, activeNote.id, folderId)}
       onSetReminder={() => setReminderTargetNote(activeNote)}
       onDuplicate={() => actions.duplicate(activeNote)}
+      onLockNote={() => setLockDialog({ note: activeNote, mode: "setup" })}
+      onManageLock={() => setLockDialog({ note: activeNote, mode: "manage" })}
       onToggleArchive={() => actions.setArchived(activeNote, !activeNote.archived)}
       onTrash={() => actions.trash(activeNote)}
       onRestore={() => actions.restore(activeNote)}
@@ -874,7 +985,22 @@ export function Workspace() {
             </Button>
           )}
 
-          {activeNote && noteMode === "edit" ? (
+          {activeNote && Boolean(activeNote.lock) && noteSession?.noteId !== activeNote.id ? (
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5 text-muted-foreground"
+                onClick={() => void closeNote()}
+              >
+                <ArrowLeft className="size-4" />
+                <span className="hidden sm:inline">{viewTitle(view, allFolders, allTags)}</span>
+              </Button>
+              <span className="ml-auto flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                <Lock className="size-3.5" aria-hidden="true" /> Locked note
+              </span>
+            </>
+          ) : activeNote && noteMode === "edit" ? (
             <>
               <Button
                 variant="ghost"
@@ -1044,6 +1170,12 @@ export function Workspace() {
           phoneAlarmNoteIds={phoneAlarmNoteIds}
           onOpenNote={openNote}
           onNoteChange={handleChange}
+          noteSession={
+            noteSession
+              ? { noteId: noteSession.noteId, attachments: noteSession.attachments }
+              : null
+          }
+          onUnlockNote={handleNoteUnlocked}
           fontSize={settings.fontSize}
           editorWidth={settings.editorWidth}
           lineHeight={settings.lineHeight}
@@ -1095,20 +1227,26 @@ export function Workspace() {
                   <span className="block truncate font-serif text-[15px] font-medium">
                     {noteTitle(note)}
                   </span>
-                  <span className="mt-0.5 block line-clamp-2 text-xs text-muted-foreground">
-                    {highlightTerms(snippet, query).map((part, index) =>
-                      part.match ? (
-                        <mark
-                          key={index}
-                          className="rounded bg-transparent font-medium text-foreground"
-                        >
-                          {part.text}
-                        </mark>
-                      ) : (
-                        <span key={index}>{part.text}</span>
-                      ),
-                    )}
-                  </span>
+                  {note.lock ? (
+                    <span className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
+                      <Lock className="size-3" aria-hidden="true" /> Locked note
+                    </span>
+                  ) : (
+                    <span className="mt-0.5 block line-clamp-2 text-xs text-muted-foreground">
+                      {highlightTerms(snippet, query).map((part, index) =>
+                        part.match ? (
+                          <mark
+                            key={index}
+                            className="rounded bg-transparent font-medium text-foreground"
+                          >
+                            {part.text}
+                          </mark>
+                        ) : (
+                          <span key={index}>{part.text}</span>
+                        ),
+                      )}
+                    </span>
+                  )}
                 </button>
               ))
             )}
@@ -1157,6 +1295,31 @@ export function Workspace() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {lockDialog &&
+        (() => {
+          // Always hand the dialog the freshest row so lock state stays live.
+          const dialogNote =
+            allNotes.find((n) => n.id === lockDialog.note.id) ?? lockDialog.note;
+          return (
+            <NoteLockDialog
+              note={dialogNote}
+              mode={lockDialog.mode}
+              nek={
+                lockDialog.mode === "manage" && noteSession?.noteId === dialogNote.id
+                  ? noteSession.nek
+                  : null
+              }
+              onClose={() => setLockDialog(null)}
+              onLocked={() =>
+                setNoteSession((prev) =>
+                  prev?.noteId === dialogNote.id ? null : prev,
+                )
+              }
+              onLockRemoved={() => setNoteSession(null)}
+            />
+          );
+        })()}
     </div>
   );
 }

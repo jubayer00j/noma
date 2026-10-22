@@ -52,6 +52,10 @@ export async function updateNote(
 export async function duplicateNote(db: NomaDatabase, id: string): Promise<Note | null> {
   const source = await db.notes.get(id);
   if (!source) return null;
+  // A locked note's body is ciphertext with attachment references sealed
+  // inside it, so its attachments can't be re-mapped to fresh ids. The UI
+  // asks the user to unlock the note first, then duplicate.
+  if (source.lock) return null;
 
   const now = Date.now();
   const newNoteId = newId();
@@ -275,6 +279,8 @@ function hashNoteContent(content: string): number {
 
 /** The original preview computation, unchanged. */
 function computeNotePreview(note: Note, length: number): string {
+  // Locked notes are title-only everywhere: never surface body text.
+  if (note.lock) return "";
   const text = htmlToPlainText(note.content);
   return text.length > length ? `${text.slice(0, length)}…` : text;
 }

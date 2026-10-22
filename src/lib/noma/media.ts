@@ -105,6 +105,10 @@ export async function cleanupOrphanedAttachments(
   const referencedIds = new Set<string>();
   const attachmentRegex = /(?:noma-attachment:\/\/|data-attachment-id=["'])([a-zA-Z0-9_-]+)/g;
 
+  // A locked note's references are sealed inside its encrypted body, so the
+  // scan below can't see them — every attachment it owns counts as referenced.
+  const lockedNoteIds = new Set(notes.filter((n) => n.lock).map((n) => n.id));
+
   for (const note of notes) {
     if (!note.content) continue;
     let match: RegExpExecArray | null;
@@ -116,6 +120,8 @@ export async function cleanupOrphanedAttachments(
   const orphaned = attachments.filter((att) => {
     // Keep attachment if it is referenced in any note content
     if (referencedIds.has(att.id)) return false;
+    // Keep every attachment owned by a locked note (references are encrypted)
+    if (lockedNoteIds.has(att.noteId)) return false;
     // Protect newly created attachments during grace period to prevent upload races
     if (now - att.createdAt < gracePeriodMs) return false;
     return true;

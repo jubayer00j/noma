@@ -12,6 +12,7 @@ import StarterKit from "@tiptap/starter-kit";
 import { useEffect, useState } from "react";
 import { useDatabase } from "@/lib/noma/DatabaseContext";
 import { NomaChartNode } from "./chart-node";
+import { useNoteSessionAttachments } from "./note-session-context";
 
 /**
  * Custom Tiptap Image extension resolving `noma-attachment://<id>` local attachment URIs
@@ -19,6 +20,9 @@ import { NomaChartNode } from "./chart-node";
  */
 function NomaImageComponent({ node }: NodeViewProps) {
   const { db } = useDatabase();
+  // For a locked note in an unlocked session, attachment rows hold
+  // ciphertext — resolve from the session's decrypted map instead.
+  const sessionAttachments = useNoteSessionAttachments();
   const [src, setSrc] = useState<string>("");
   const srcAttr = node.attrs["src"] as string;
   const altAttr = node.attrs["alt"] as string | undefined;
@@ -29,7 +33,9 @@ function NomaImageComponent({ node }: NodeViewProps) {
       const attachmentId = srcAttr.replace("noma-attachment://", "");
       if (db) {
         db.attachments.get(attachmentId).then((att) => {
-          if (active && att?.data) setSrc(att.data);
+          if (!active) return;
+          const data = att?.encrypted ? sessionAttachments?.get(attachmentId) : att?.data;
+          if (data) setSrc(data);
         });
       }
     } else {
@@ -38,7 +44,7 @@ function NomaImageComponent({ node }: NodeViewProps) {
     return () => {
       active = false;
     };
-  }, [srcAttr, db]);
+  }, [srcAttr, db, sessionAttachments]);
 
   return (
     <div className="relative inline-block my-2 max-w-full">
