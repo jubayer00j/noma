@@ -555,7 +555,7 @@ export function DriveCard({
           {backupMode === "scheduled" && (
             <p className="mt-3 text-xs text-muted-foreground">
               {Capacitor.isNativePlatform()
-                ? "Noma runs the backup whenever it's open and the timer is due — and the schedule is registered with Android too, so if a backup falls due while the app is closed you'll get a gentle reminder to open Noma and finish it."
+                ? "On Android, scheduled backups upload in the background at the scheduled time — even while Noma is closed. Noma stages each backup ahead of time so Android can send it without opening the app; if a run ever can't complete, you'll get a gentle reminder instead."
                 : "Backups run while Noma is open; anything overdue runs as soon as you open it."}
             </p>
           )}

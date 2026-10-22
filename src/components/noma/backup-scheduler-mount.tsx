@@ -1,7 +1,12 @@
 import { useEffect, useRef } from "react";
 import { useSettings } from "@/hooks/use-noma";
 import { useAuth } from "@/lib/noma/auth";
-import { reportNativeBackupState, syncNativeBackupSchedule } from "@/lib/noma/background-backup";
+import {
+  reconcileNativeBackupStatus,
+  reportNativeBackupState,
+  stageCurrentSnapshot,
+  syncNativeBackupSchedule,
+} from "@/lib/noma/background-backup";
 import { startBackupScheduler } from "@/lib/noma/backup-scheduler";
 import { useDatabase } from "@/lib/noma/DatabaseContext";
 
@@ -27,11 +32,15 @@ export function BackupSchedulerMount() {
 
   useEffect(() => {
     if (!db || !ready) return;
+    // Adopt any backup the Android worker uploaded while the app was away
+    // before the engine starts judging what is still unbacked.
+    void reconcileNativeBackupStatus(db, ownerId);
     return startBackupScheduler({
       db,
       ownerId,
       getConfig: () => configRef.current,
-      onStateChange: (state) => void reportNativeBackupState(state),
+      onStateChange: (state) => void reportNativeBackupState(state, ownerId),
+      stageSnapshot: () => stageCurrentSnapshot(db, ownerId),
     });
   }, [db, ownerId, ready]);
 
