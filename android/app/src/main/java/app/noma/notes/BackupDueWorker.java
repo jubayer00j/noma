@@ -170,7 +170,7 @@ public class BackupDueWorker extends Worker {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new TransientFailure();
-        } catch (NeedsUserAction | TransientFailure e) {
+        } catch (NeedsUserAction e) {
             throw e;
         } catch (Exception e) {
             throw new NeedsUserAction();
