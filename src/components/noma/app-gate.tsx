@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from "react";
+import { BootScreen } from "./boot-screen";
 import { VerifyEmail } from "./verify-email";
 import { Welcome } from "./welcome";
 import { useSettings } from "@/hooks/use-noma";
@@ -29,13 +30,7 @@ export function AppGate({ children }: { children: ReactNode }) {
   }, [settings.theme, ready]);
 
   if (auth.configured && auth.loading) {
-    return (
-      <div className="flex min-h-dvh items-center justify-center bg-background">
-        <p className="text-sm text-muted-foreground animate-pulse motion-reduce:animate-none">
-          Opening Noma…
-        </p>
-      </div>
-    );
+    return <BootScreen />;
   }
 
   if (auth.configured && auth.user && auth.needsEmailVerification) return <VerifyEmail />;
@@ -56,13 +51,7 @@ function AppGateContent({ children }: { children: ReactNode }) {
   const { isLocked, isLockStateResolving } = useAppLock();
 
   if (isLockStateResolving) {
-    return (
-      <div className="flex min-h-dvh items-center justify-center bg-background">
-        <p className="text-sm text-muted-foreground animate-pulse motion-reduce:animate-none">
-          Opening Noma…
-        </p>
-      </div>
-    );
+    return <BootScreen />;
   }
 
   if (isLocked) {

@@ -396,6 +396,56 @@ export function WorkspaceSurfaces({
   );
 }
 
+/**
+ * Structural stand-in for the workspace while the database opens: same
+ * sidebar/header/list geometry as the real shell, with the same skeleton
+ * cards the notes list uses, so startup reads as the app materializing —
+ * not a spinner on an empty screen.
+ */
+function WorkspaceShellSkeleton() {
+  return (
+    <div className="flex h-dvh overflow-hidden bg-background" aria-busy="true" aria-label="Loading workspace">
+      <aside className="hidden w-64 shrink-0 border-r border-sidebar-border bg-sidebar md:block">
+        <div className="space-y-3 px-4 pt-5">
+          <div className="flex items-center gap-2.5">
+            <img
+              src="/noma-icon-192.png"
+              alt=""
+              width={32}
+              height={32}
+              className="size-8 rounded-[10px]"
+            />
+            <div className="h-4 w-16 animate-pulse rounded bg-muted motion-reduce:animate-none" />
+          </div>
+          {[0, 1, 2, 3, 4].map((row) => (
+            <div
+              key={row}
+              className="h-8 animate-pulse rounded-lg bg-muted/60 motion-reduce:animate-none"
+            />
+          ))}
+        </div>
+      </aside>
+      <main className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-3 sm:px-5">
+          <div className="h-4 w-28 animate-pulse rounded bg-muted motion-reduce:animate-none" />
+          <div className="ml-auto h-8 w-24 animate-pulse rounded-md bg-muted/60 motion-reduce:animate-none" />
+        </header>
+        <div className="noma-scroll flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-3xl space-y-3 px-4 py-4 sm:px-6">
+            {[0, 1, 2, 3].map((row) => (
+              <div key={row} className="rounded-xl border border-border/60 bg-card p-4 shadow-xs">
+                <div className="h-4 w-1/3 animate-pulse rounded bg-muted motion-reduce:animate-none" />
+                <div className="mt-2.5 h-3 w-3/4 animate-pulse rounded bg-muted/70 motion-reduce:animate-none" />
+                <div className="mt-2 h-3 w-1/5 animate-pulse rounded bg-muted/50 motion-reduce:animate-none" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
+
 export function Workspace() {
   const { db, loading: dbLoading } = useDatabase();
   const notes = useLiveQuery(() => db?.notes.toArray() ?? [], [db], undefined);
@@ -826,16 +876,7 @@ export function Workspace() {
   );
 
   if (dbLoading || !db) {
-    return (
-      <div className="flex min-h-dvh items-center justify-center bg-background">
-        <div className="flex flex-col items-center gap-4">
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent motion-reduce:animate-none" />
-          <p className="text-sm text-muted-foreground animate-pulse motion-reduce:animate-none">
-            Loading workspace…
-          </p>
-        </div>
-      </div>
-    );
+    return <WorkspaceShellSkeleton />;
   }
 
   const sidebar = (
