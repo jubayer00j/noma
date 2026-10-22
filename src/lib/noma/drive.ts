@@ -708,6 +708,11 @@ export async function backupNow(
         lastSignature: await librarySignature(db),
       });
       await recordBackup(db, "google-drive", "success", payload.notes.length);
+      // Lets the Settings card and the backup scheduler refresh their
+      // last-backup displays no matter who started this backup.
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("noma:backup-completed"));
+      }
       return { connection, manifest: payload.manifest };
     } finally {
       activeBackups.delete(lockKey);

@@ -1,6 +1,7 @@
 import Dexie, { type Table } from "dexie";
 import {
   DEFAULT_SETTINGS,
+  withBackupModeMigration,
   type AppSettings,
   type AttachmentMeta,
   type BackupRecord,
@@ -52,7 +53,8 @@ export function newId(): string {
 
 export async function getSettings(db: NomaDatabase): Promise<AppSettings> {
   const existing = await db.settings.get("app");
-  if (existing) return { ...DEFAULT_SETTINGS, ...existing };
+  if (existing)
+    return withBackupModeMigration({ ...DEFAULT_SETTINGS, ...existing }, existing);
   await db.settings.put(DEFAULT_SETTINGS);
   return DEFAULT_SETTINGS;
 }
