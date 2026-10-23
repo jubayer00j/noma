@@ -24,6 +24,8 @@ import { format } from "date-fns";
 import { Bell } from "lucide-react";
 import { NoteEditor, type SaveState } from "./note-editor";
 import { NoteReadView } from "./note-read-view";
+import { BacklinksPanel } from "./backlinks-panel";
+import type { NoteLinkItem } from "./note-link-picker";
 import { NoteList, type NoteActions } from "./note-list";
 import { useStableNotes } from "./use-stable-notes";
 import type { VirtualListHandle } from "./virtual-list";
@@ -342,6 +344,35 @@ export function WorkspaceSurfaces({
 
   const surfaceApi = useMemo(() => ({ scrollElement: surfaceEl, listHandleRef }), [surfaceEl]);
 
+  const notesById = useMemo(() => new Map(allNotes.map((n) => [n.id, n])), [allNotes]);
+
+  /** Opens a note from a link chip / panel row, which carry only the id. */
+  const openNoteById = useCallback(
+    (noteId: string) => {
+      const target = notesById.get(noteId);
+      if (target) onOpenNote(target);
+    },
+    [notesById, onOpenNote],
+  );
+
+  /**
+   * `[[` picker candidates: live, non-template notes, never the note being
+   * edited. Archived and locked notes are included — a locked note's title
+   * is already public in lists, so linking to it leaks nothing.
+   */
+  const noteLinkItems = useCallback(
+    (query: string): NoteLinkItem[] => {
+      const q = query.trim().toLowerCase();
+      return allNotes
+        .filter((n) => !n.deleted && !n.isTemplate && n.id !== activeNoteId)
+        .filter((n) => q === "" || noteTitle(n).toLowerCase().includes(q))
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, 8)
+        .map((n) => ({ id: n.id, title: noteTitle(n) }));
+    },
+    [allNotes, activeNoteId],
+  );
+
   useEffect(() => {
     const wasOpen = wasNoteOpenRef.current;
     wasNoteOpenRef.current = noteOpen;
@@ -380,6 +411,8 @@ export function WorkspaceSurfaces({
                   fontSize={fontSize}
                   editorWidth={editorWidth}
                   lineHeight={lineHeight}
+                  notesById={notesById}
+                  onOpenNote={openNoteById}
                 />
               ) : (
                 <NoteEditor
@@ -389,6 +422,15 @@ export function WorkspaceSurfaces({
                   fontSize={fontSize}
                   editorWidth={editorWidth}
                   lineHeight={lineHeight}
+                  noteLinkItems={noteLinkItems}
+                />
+              )}
+              {!activeNote.isTemplate && (
+                <BacklinksPanel
+                  note={activeNote}
+                  notes={allNotes}
+                  onOpenNote={onOpenNote}
+                  editorWidth={editorWidth}
                 />
               )}
             </NoteSessionAttachmentsContext.Provider>

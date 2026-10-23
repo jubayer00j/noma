@@ -1,9 +1,22 @@
 import { useEffect, useMemo, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { useDatabase } from "@/lib/noma/DatabaseContext";
+import { noteTitle } from "@/lib/noma/notes";
 import { sanitizeHtml } from "@/lib/noma/sanitize";
+import type { Note } from "@/lib/noma/types";
 import { ChartRenderer, parseChartElement } from "./chart-node";
 import { useNoteSessionAttachments } from "./note-session-context";
+
+interface NoteReadContentProps {
+  content: string;
+  /**
+   * Live note lookup for resolving `[[` link chips to their targets'
+   * current titles and states. Omit to render chips as stored.
+   */
+  notesById?: ReadonlyMap<string, Note> | undefined;
+  /** Opens a note when one of its live link chips is clicked. */
+  onOpenNote?: ((noteId: string) => void) | undefined;
+}
 
 /**
  * Static read renderer for note content. Renders the already-sanitized stored
@@ -12,6 +25,9 @@ import { useNoteSessionAttachments } from "./note-session-context";
  *
  * - `img[src^="noma-attachment://"]` resolved to blob/data URLs via IndexedDB
  * - `div[data-type="noma-chart"]` mounted with the existing ChartRenderer
+ * - `span[data-note-link]` chips resolved against the live library: a live
+ *   target shows its current title and opens on click; a trashed or
+ *   missing target renders muted and inert with its last known label
  *
  * The `.tiptap` class keeps the shared `.noma-editor .tiptap` typography exactly
  * as the editor produced it. Sanitization is the same `sanitizeHtml` applied on
@@ -21,7 +37,7 @@ import { useNoteSessionAttachments } from "./note-session-context";
  * HTML changing (e.g. the database handle is recreated on auth changes) and
  * will neither double-wrap images nor mount a second React root on a chart.
  */
-export function NoteReadContent({ content }: { content: string }) {
+export function NoteReadContent({ content, notesById, onOpenNote }: NoteReadContentProps) {
   const { db } = useDatabase();
   // Decrypted payloads for a locked note open in an unlocked session; its
   // attachment rows hold ciphertext, so the session map wins when present.
@@ -83,6 +99,25 @@ export function NoteReadContent({ content }: { content: string }) {
       }
     }
 
+    // Note-link chips: resolve each against the live library. Renames are
+    // free (the chip stores the target id), so a live target always shows
+    // its current title; trashed/missing targets keep the snapshot label
+    // and are marked inert for styling and the click handler.
+    for (const chip of Array.from(container.querySelectorAll<HTMLElement>("span[data-note-link]"))) {
+      const targetId = chip.getAttribute("data-note-id");
+      if (!targetId) continue;
+      const target = notesById?.get(targetId);
+      if (target && !target.deleted) {
+        chip.textContent = noteTitle(target);
+        chip.dataset["linkState"] = "live";
+      } else if (target) {
+        chip.textContent = noteTitle(target);
+        chip.dataset["linkState"] = "trashed";
+      } else {
+        chip.dataset["linkState"] = "missing";
+      }
+    }
+
     for (const el of Array.from(container.querySelectorAll('div[data-type="noma-chart"]'))) {
       if (chartRoots.current.has(el)) continue;
       // Mirror the read-only chart node view's static wrapper (its edit/delete
@@ -110,7 +145,7 @@ export function NoteReadContent({ content }: { content: string }) {
     return () => {
       active = false;
     };
-  }, [html, db, sessionAttachments]);
+  }, [html, db, sessionAttachments, notesById]);
 
   // Final cleanup when the read view unmounts (e.g. navigating between notes).
   useEffect(
@@ -121,5 +156,21 @@ export function NoteReadContent({ content }: { content: string }) {
     [],
   );
 
-  return <div ref={containerRef} className="tiptap" dangerouslySetInnerHTML={{ __html: html }} />;
+  const handleClick = (event: React.MouseEvent) => {
+    if (!onOpenNote) return;
+    const chip = (event.target as Element).closest?.("[data-note-link]");
+    if (!chip || !containerRef.current?.contains(chip)) return;
+    if (chip.getAttribute("data-link-state") !== "live") return;
+    const targetId = chip.getAttribute("data-note-id");
+    if (targetId) onOpenNote(targetId);
+  };
+
+  return (
+    <div
+      ref={containerRef}
+      className="tiptap"
+      onClick={handleClick}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
 }
