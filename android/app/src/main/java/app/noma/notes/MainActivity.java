@@ -168,7 +168,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
-    protected void onDestroy() {
+    public void onDestroy() {
         // A pending fallback / minimum-display callback must not
         // outlive the activity.
         if (splashHandler != null) {
