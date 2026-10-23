@@ -8,6 +8,8 @@ import {
   type Folder,
   type Note,
   type Reminder,
+  type SyncState,
+  type SyncTombstone,
   type Tag,
 } from "./types";
 
@@ -19,6 +21,8 @@ export class NomaDatabase extends Dexie {
   settings!: Table<AppSettings, string>;
   backups!: Table<BackupRecord, string>;
   reminders!: Table<Reminder, string>;
+  tombstones!: Table<SyncTombstone, string>;
+  syncMeta!: Table<SyncState, string>;
 
   constructor(databaseName: string) {
     super(databaseName);
@@ -42,6 +46,19 @@ export class NomaDatabase extends Dexie {
       settings: "id",
       backups: "id, createdAt",
       reminders: "id, noteId, scheduledAt, status, createdAt, updatedAt",
+    });
+
+    // v3 — Multi-device sync: deletion tombstones + sync bookkeeping.
+    this.version(3).stores({
+      notes: "id, updatedAt, createdAt, folderId, pinned, favorite, archived, deleted, *tagIds",
+      folders: "id, name, parentId",
+      tags: "id, name",
+      attachments: "id, noteId",
+      settings: "id",
+      backups: "id, createdAt",
+      reminders: "id, noteId, scheduledAt, status, createdAt, updatedAt",
+      tombstones: "id, entity, deletedAt",
+      syncMeta: "id",
     });
   }
 }

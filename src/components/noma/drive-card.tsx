@@ -40,6 +40,7 @@ import {
 } from "@/lib/noma/backup-scheduler";
 import { useAuth } from "@/lib/noma/auth";
 import { useDatabase } from "@/lib/noma/DatabaseContext";
+import { getSyncState, syncNow } from "@/lib/noma/sync";
 import {
   backupNow,
   CANONICAL_BACKUP_NAME,
@@ -97,13 +98,14 @@ const MODE_OPTIONS: Array<{ value: BackupMode; title: string; description: strin
   },
   {
     value: "sync",
-    title: "Auto sync",
-    description: "Backs up shortly after you change a note, whenever you're online.",
+    title: "Sync",
+    description: "Keep this device and your other devices up to date through Drive.",
   },
   {
     value: "scheduled",
     title: "Scheduled",
-    description: "Backs up on a timer you choose — the way WhatsApp does it.",
+    description:
+      "Backs up on a timer you choose — and pulls changes from your other devices when each backup runs.",
   },
 ];
 
@@ -141,6 +143,11 @@ export function DriveCard({
   }, [auth.user?.uid]);
 
   const [justConnected, setJustConnected] = useState(false);
+  const [syncInfo, setSyncInfo] = useState<{ lastSyncAt: number | null; failed: boolean }>({
+    lastSyncAt: null,
+    failed: false,
+  });
+  const [syncing, setSyncing] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [restoreFiles, setRestoreFiles] = useState<DriveBackupFile[] | null>(null);
@@ -168,6 +175,63 @@ export function DriveCard({
     window.addEventListener("noma:backup-completed", refresh);
     return () => window.removeEventListener("noma:backup-completed", refresh);
   }, [auth.user?.uid]);
+
+  const refreshSyncInfo = useCallback(
+    async (failed?: boolean) => {
+      if (!db) return;
+      const state = await getSyncState(db);
+      setSyncInfo((prev) => ({
+        lastSyncAt: state.lastSyncAt,
+        failed: failed ?? prev.failed,
+      }));
+    },
+    [db],
+  );
+
+  useEffect(() => {
+    void refreshSyncInfo();
+  }, [refreshSyncInfo, connection]);
+
+  useEffect(() => {
+    const onSyncCompleted = (event: Event) => {
+      const detail = (event as CustomEvent<{ status?: string }>).detail;
+      void refreshSyncInfo(detail?.status === "failed");
+    };
+    window.addEventListener("noma:sync-completed", onSyncCompleted);
+    return () => window.removeEventListener("noma:sync-completed", onSyncCompleted);
+  }, [refreshSyncInfo]);
+
+  const runSync = useCallback(async () => {
+    if (!db) return;
+    setSyncing(true);
+    try {
+      const result = await syncNow(db, auth.user?.uid ?? null, "manual");
+      if (result.status === "failed") {
+        toast.error(result.reason ?? "Sync failed — will retry.");
+      } else if (result.status === "skipped") {
+        toast.message(result.reason ?? "Sync skipped.");
+      } else {
+        const counts = result.counts;
+        const parts: string[] = [];
+        if (counts) {
+          if (counts.added) parts.push(`${counts.added} added`);
+          if (counts.updated) parts.push(`${counts.updated} updated`);
+          if (counts.deleted) parts.push(`${counts.deleted} deleted`);
+          if (counts.conflicts) {
+            parts.push(
+              `${counts.conflicts} conflict ${counts.conflicts === 1 ? "copy" : "copies"} saved`,
+            );
+          }
+        }
+        toast.success(
+          parts.length ? `Sync complete — ${parts.join(", ")}` : "Everything is in sync",
+        );
+      }
+      await refreshSyncInfo(result.status === "failed");
+    } finally {
+      setSyncing(false);
+    }
+  }, [db, auth.user?.uid, refreshSyncInfo]);
 
   const handleFailure = useCallback((error: unknown, label: string) => {
     const message = error instanceof Error ? error.message : label;
@@ -267,12 +331,12 @@ export function DriveCard({
   if (!isDriveConfigured) {
     return (
       <div className="rounded-xl border border-border bg-card p-5">
-        <h3 className="font-serif text-base font-medium">Google Drive</h3>
+        <h3 className="font-serif text-base font-medium">Google Drive — Sync & Backup</h3>
         <p className="mt-1 text-sm text-muted-foreground">
           Optional. Add <code className="text-xs">googleDriveClientId</code> (a Google Cloud OAuth
           2.0 <em>Web</em> client ID) in{" "}
-          <code className="text-xs">src/config/firebaseConfig.ts</code> to enable Drive backups. It
-          is separate from Firebase Google Sign-In.
+          <code className="text-xs">src/config/firebaseConfig.ts</code> to enable Drive sync and
+          backups. It is separate from Firebase Google Sign-In.
         </p>
       </div>
     );
@@ -282,7 +346,7 @@ export function DriveCard({
     <div className="rounded-xl border border-border bg-card p-5">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h3 className="font-serif text-base font-medium">Google Drive</h3>
+          <h3 className="font-serif text-base font-medium">Google Drive — Sync & Backup</h3>
           {connection ? (
             <p className={`mt-1 flex items-center gap-1.5 text-sm ${justConnected ? fade : ""}`}>
               <Check className="size-4 text-emerald-600" aria-hidden="true" />
@@ -297,8 +361,8 @@ export function DriveCard({
 
       <p className="mt-3 text-sm text-muted-foreground">
         {connection
-          ? "Your Noma backups are stored in your own Google Drive, in a folder called “Noma Backups”."
-          : "Keep a secure backup of your Noma library in your own Google Drive. Noma asks only for permission to manage the backup files it creates — never your whole Drive."}
+          ? "Your notes sync and back up to your own Google Drive, in a folder called “Noma Backups”."
+          : "Keep your notes in sync across your devices and backed up in your own Google Drive. Noma asks only for permission to manage the files it creates — never your whole Drive."}
       </p>
 
       {connection?.email && (
@@ -327,6 +391,28 @@ export function DriveCard({
           ) : (
             "No backup yet"
           )}
+        </p>
+      )}
+
+      {connection && backupMode !== "off" && (
+        <p className="mt-1 text-sm text-muted-foreground" aria-live="polite">
+          {syncing ? (
+            "Syncing…"
+          ) : syncInfo.failed ? (
+            <span className="text-destructive">Sync failed — will retry</span>
+          ) : syncInfo.lastSyncAt ? (
+            `Synced · ${relative(syncInfo.lastSyncAt)}`
+          ) : (
+            "Not synced yet"
+          )}
+        </p>
+      )}
+
+      {connection && backupMode !== "off" && syncInfo.lastSyncAt === null && !syncInfo.failed && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          On the first sync, notes from this device and your other devices are combined — nothing is
+          deleted except items you deleted forever on a device. If a device stays offline for more
+          than 90 days, something deleted forever elsewhere can reappear from it.
         </p>
       )}
 
@@ -380,6 +466,21 @@ export function DriveCard({
             >
               <CloudUpload className="size-4" aria-hidden="true" /> Backup now
             </Button>
+            {backupMode !== "off" && (
+              <Button
+                variant="outline"
+                className={`h-11 gap-2 ${tap}`}
+                disabled={syncing || status.kind === "working"}
+                onClick={() => void runSync()}
+              >
+                {syncing ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <RefreshCw className="size-4" aria-hidden="true" />
+                )}{" "}
+                Sync now
+              </Button>
+            )}
             <Button
               variant="outline"
               className={`h-11 gap-2 ${tap}`}
@@ -429,9 +530,7 @@ export function DriveCard({
                   aria-checked={active}
                   onClick={() => onBackupModeChange(option.value)}
                   className={`flex items-start gap-3 rounded-xl border p-3 text-left transition-colors ${tap} ${
-                    active
-                      ? "border-primary/50 bg-primary/5"
-                      : "border-border hover:bg-accent/50"
+                    active ? "border-primary/50 bg-primary/5" : "border-border hover:bg-accent/50"
                   }`}
                 >
                   <span
@@ -548,9 +647,9 @@ export function DriveCard({
 
           {backupMode === "sync" && (
             <p className="mt-3 text-xs text-muted-foreground">
-              Changes upload about 15 seconds after you stop editing. Anything pending uploads
-              as soon as you're back online or reopen Noma — and only when something actually
-              changed.
+              Changes upload about 15 seconds after you stop editing, and changes from your other
+              devices are pulled in when you open Noma or bring it to the front. Anything pending
+              uploads as soon as you're back online — and only when something actually changed.
             </p>
           )}
           {backupMode === "scheduled" && (
@@ -565,7 +664,8 @@ export function DriveCard({
 
       <p className="mt-4 text-xs text-muted-foreground">
         Your notes are stored locally on this device. Google Drive is optional — when connected,
-        Noma backs up your data to your own Google Drive, and Noma never stores it anywhere else.
+        Noma syncs and backs up your data to your own Google Drive, and Noma never stores it
+        anywhere else.
       </p>
 
       {/* Restore flow */}

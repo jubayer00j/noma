@@ -732,6 +732,72 @@ export async function fetchDriveBackup(
   return readBackupZip(await response.blob(), ownerId);
 }
 
+export interface CanonicalFileMeta {
+  id: string;
+  modifiedTime: number;
+  /** Drive's MD5 of the file bytes — a cheap "did the snapshot change?" test. */
+  md5Checksum: string | null;
+  size: number | null;
+}
+
+/**
+ * Metadata for the canonical backup file, or null when none exists yet.
+ * Sync reads this before deciding whether a download is worthwhile.
+ */
+export async function getCanonicalFileMeta(
+  ownerId: string | null,
+): Promise<CanonicalFileMeta | null> {
+  const token = await authorize(ownerId);
+  const folderId = await ensureFolder(token, ownerId);
+  const fileId = await resolveCanonicalFileId(token, folderId, ownerId);
+  if (!fileId) return null;
+  const response = await driveFetch(
+    `drive/v3/files/${fileId}?fields=id,modifiedTime,md5Checksum,size`,
+    token,
+  );
+  const data = (await response.json()) as {
+    id?: string;
+    modifiedTime?: string;
+    md5Checksum?: string;
+    size?: string;
+  };
+  return {
+    id: data.id ?? fileId,
+    modifiedTime: data.modifiedTime ? new Date(data.modifiedTime).getTime() : 0,
+    md5Checksum: data.md5Checksum ?? null,
+    size: data.size ? Number(data.size) : null,
+  };
+}
+
+/** Downloads and parses the canonical backup, together with its metadata. */
+export async function fetchCanonicalBackup(
+  ownerId: string | null,
+): Promise<{ payload: BackupPayload; meta: CanonicalFileMeta } | null> {
+  const token = await authorize(ownerId);
+  const folderId = await ensureFolder(token, ownerId);
+  const fileId = await resolveCanonicalFileId(token, folderId, ownerId);
+  if (!fileId) return null;
+  const metaResponse = await driveFetch(
+    `drive/v3/files/${fileId}?fields=id,modifiedTime,md5Checksum,size`,
+    token,
+  );
+  const data = (await metaResponse.json()) as {
+    id?: string;
+    modifiedTime?: string;
+    md5Checksum?: string;
+    size?: string;
+  };
+  const meta: CanonicalFileMeta = {
+    id: data.id ?? fileId,
+    modifiedTime: data.modifiedTime ? new Date(data.modifiedTime).getTime() : 0,
+    md5Checksum: data.md5Checksum ?? null,
+    size: data.size ? Number(data.size) : null,
+  };
+  const response = await driveFetch(`drive/v3/files/${fileId}?alt=media`, token);
+  const payload = await readBackupZip(await response.blob(), ownerId);
+  return { payload, meta };
+}
+
 /** Cheap fingerprint of the local library, used to skip redundant uploads. */
 export async function librarySignature(db: import("./db").NomaDatabase): Promise<string> {
   const d = db;

@@ -2,8 +2,9 @@ import JSZip from "jszip";
 import { type NomaDatabase, newId } from "./db";
 import { cleanupOrphanedReminders } from "./notes";
 import { cleanupOrphanedAttachments } from "./media";
-import { scheduleNotification } from "./notifications";
+import { cancelNotification, scheduleNotification } from "./notifications";
 import { sanitizeHtml } from "./sanitize";
+import { getDeviceId } from "./sync";
 import {
   BACKUP_FORMAT_VERSION,
   NOMA_VERSION,
@@ -12,6 +13,7 @@ import {
   type Folder,
   type Note,
   type Reminder,
+  type SyncTombstone,
   type Tag,
 } from "./types";
 
@@ -33,6 +35,19 @@ export interface BackupPayload {
   attachments: AttachmentMeta[];
   reminders: Reminder[];
   settings: Record<string, unknown> | null;
+  /** Hard-deletion markers from the writer's `sync.json` (empty for
+   * backups made before multi-device sync existed). */
+  tombstones: SyncTombstone[];
+  /** Device that wrote the snapshot, when known. */
+  deviceId: string | null;
+}
+
+/** What a merge did, for sync status and restore feedback. */
+export interface MergeCounts {
+  added: number;
+  updated: number;
+  deleted: number;
+  conflicts: number;
 }
 
 export function backupFileName(date = new Date()): string {
@@ -70,6 +85,11 @@ export async function collectBackup(
     ? (await db.reminders.toArray()).filter((r) => noteIdSet.has(r.noteId))
     : [];
   const rawSettings = includeSettings ? ((await db.settings.get("app")) ?? null) : null;
+  // Tombstones are sync state, not content: every snapshot carries all of
+  // them regardless of the export filters, so deletions keep propagating
+  // even through partial exports.
+  const tombstones = db.tombstones ? await db.tombstones.toArray() : [];
+  const deviceId = getDeviceId();
   const sanitizedSettings = rawSettings
     ? {
         ...rawSettings,
@@ -100,6 +120,7 @@ export async function collectBackup(
       tagCount: tags.length,
       attachmentCount: attachments.length,
       reminderCount: reminders.length,
+      deviceId,
     },
     notes,
     folders,
@@ -107,6 +128,8 @@ export async function collectBackup(
     attachments,
     reminders,
     settings: sanitizedSettings as unknown as Record<string, unknown> | null,
+    tombstones,
+    deviceId,
   };
 }
 
@@ -122,6 +145,20 @@ export async function buildBackupZip(
   zip.file("tags.json", JSON.stringify(payload.tags, null, 2));
   zip.file("reminders.json", JSON.stringify(payload.reminders, null, 2));
   zip.file("settings.json", JSON.stringify(payload.settings, null, 2));
+  // Sync metadata is additive (format stays v2): older Noma versions
+  // restoring this backup simply ignore the extra file.
+  zip.file(
+    "sync.json",
+    JSON.stringify(
+      {
+        deviceId: payload.deviceId,
+        syncedAt: new Date().toISOString(),
+        tombstones: payload.tombstones,
+      },
+      null,
+      2,
+    ),
+  );
 
   const notesFolder = zip.folder("notes")!;
   for (const note of payload.notes)
@@ -236,6 +273,32 @@ export async function readBackupZip(
     }
   }
 
+  // Sync metadata is optional and non-critical: a malformed sync.json
+  // must never make an otherwise valid backup unreadable.
+  let tombstones: SyncTombstone[] = [];
+  let deviceId: string | null = manifest.deviceId ?? null;
+  const syncFile = zip.file("sync.json");
+  if (syncFile) {
+    try {
+      const parsed = JSON.parse(await syncFile.async("string")) as {
+        deviceId?: string | null;
+        tombstones?: SyncTombstone[];
+      };
+      if (Array.isArray(parsed.tombstones)) {
+        tombstones = parsed.tombstones.filter(
+          (t) =>
+            t &&
+            typeof t.id === "string" &&
+            typeof t.deletedAt === "number" &&
+            typeof t.entity === "string",
+        );
+      }
+      if (typeof parsed.deviceId === "string") deviceId = parsed.deviceId;
+    } catch {
+      /* ignore — sync metadata is additive */
+    }
+  }
+
   return {
     manifest,
     notes,
@@ -244,14 +307,113 @@ export async function readBackupZip(
     attachments,
     reminders: (await readJson<Reminder[]>(zip, "reminders.json")) ?? [],
     settings: await readJson<Record<string, unknown>>(zip, "settings.json"),
+    tombstones,
+    deviceId,
   };
+}
+
+/**
+ * Applies deletion tombstones to the local library. A tombstone deletes
+ * its entity only when the local copy hasn't been edited after the
+ * deletion (`deletedAt >= entity timestamp`); a newer local edit revives
+ * the entity and the tombstone is ignored. Note deletions cascade to
+ * attachments and reminders (mirroring `deleteNoteForever`), folder
+ * deletions unassign their notes (mirroring `deleteFolder`), and tag
+ * deletions strip the tag from notes (mirroring `deleteTag`). Returns the
+ * number of rows deleted, cascades included.
+ */
+export async function applyTombstones(
+  db: NomaDatabase,
+  tombstones: SyncTombstone[],
+): Promise<number> {
+  if (!tombstones.length) return 0;
+  // Newest marker per entity wins.
+  const byKey = new Map<string, SyncTombstone>();
+  for (const tombstone of tombstones) {
+    const key = `${tombstone.entity}:${tombstone.id}`;
+    const existing = byKey.get(key);
+    if (!existing || tombstone.deletedAt > existing.deletedAt) byKey.set(key, tombstone);
+  }
+
+  let deleted = 0;
+  for (const tombstone of byKey.values()) {
+    const { entity, id, deletedAt } = tombstone;
+    if (entity === "note") {
+      const note = await db.notes.get(id);
+      if (!note || deletedAt < note.updatedAt) continue;
+      const reminders = await db.reminders.where("noteId").equals(id).toArray();
+      for (const reminder of reminders) {
+        await cancelNotification(reminder.id, reminder.notificationId);
+      }
+      const attachmentCount = await db.attachments.where("noteId").equals(id).count();
+      await db.transaction("rw", db.notes, db.attachments, db.reminders, async () => {
+        await db.attachments.where("noteId").equals(id).delete();
+        await db.reminders.where("noteId").equals(id).delete();
+        await db.notes.delete(id);
+      });
+      deleted += 1 + reminders.length + attachmentCount;
+    } else if (entity === "folder") {
+      const folder = await db.folders.get(id);
+      if (!folder || deletedAt < folder.updatedAt) continue;
+      await db.transaction("rw", db.folders, db.notes, async () => {
+        const notes = await db.notes.where("folderId").equals(id).toArray();
+        for (const note of notes) {
+          await db.notes.update(note.id, { folderId: null, updatedAt: Date.now() });
+        }
+        await db.folders.delete(id);
+      });
+      deleted += 1;
+    } else if (entity === "tag") {
+      const tag = await db.tags.get(id);
+      if (!tag || deletedAt < (tag.updatedAt ?? tag.createdAt)) continue;
+      await db.transaction("rw", db.tags, db.notes, async () => {
+        const notes = await db.notes.filter((n) => n.tagIds.includes(id)).toArray();
+        for (const note of notes) {
+          await db.notes.update(note.id, {
+            tagIds: note.tagIds.filter((t) => t !== id),
+            updatedAt: Date.now(),
+          });
+        }
+        await db.tags.delete(id);
+      });
+      deleted += 1;
+    } else if (entity === "attachment") {
+      const attachment = await db.attachments.get(id);
+      if (!attachment || deletedAt < (attachment.updatedAt ?? attachment.createdAt)) continue;
+      await db.attachments.delete(id);
+      deleted += 1;
+    } else if (entity === "reminder") {
+      const reminder = await db.reminders.get(id);
+      if (!reminder || deletedAt < reminder.updatedAt) continue;
+      await cancelNotification(reminder.id, reminder.notificationId);
+      await db.reminders.delete(id);
+      deleted += 1;
+    }
+  }
+  return deleted;
+}
+
+/** Unions a payload's tombstones into the local tombstone table (newest
+ * per id wins), so deletions keep propagating through later snapshots. */
+async function recordPayloadTombstones(
+  db: NomaDatabase,
+  tombstones: SyncTombstone[],
+): Promise<void> {
+  if (!db.tombstones || !tombstones.length) return;
+  for (const tombstone of tombstones) {
+    const existing = await db.tombstones.get(tombstone.id);
+    if (!existing || tombstone.deletedAt > existing.deletedAt) {
+      await db.tombstones.put(tombstone);
+    }
+  }
 }
 
 export async function applyBackup(
   db: NomaDatabase,
   payload: BackupPayload,
   mode: "merge" | "replace",
-): Promise<void> {
+): Promise<MergeCounts> {
+  const counts: MergeCounts = { added: 0, updated: 0, deleted: 0, conflicts: 0 };
   // Deduplicate payload.reminders by noteId so backup restore never introduces duplicate reminders for a note
   const deduplicatedReminders: Reminder[] = [];
   if (payload.reminders?.length) {
@@ -286,29 +448,84 @@ export async function applyBackup(
         await db.notes.bulkPut(payload.notes);
         await db.attachments.bulkPut(payload.attachments);
         if (deduplicatedReminders.length) await db.reminders.bulkPut(deduplicatedReminders);
+        counts.added =
+          payload.folders.length +
+          payload.tags.length +
+          payload.notes.length +
+          payload.attachments.length +
+          deduplicatedReminders.length;
       } else {
+        // Merge resolves every entity kind the same way now: the newest
+        // version wins. (Folders/tags/attachments used to be insert-only,
+        // which silently dropped renames and note-lock re-encryption.)
         for (const folder of payload.folders) {
-          if (!(await db.folders.get(folder.id))) await db.folders.put(folder);
+          const existing = await db.folders.get(folder.id);
+          if (!existing) {
+            await db.folders.put(folder);
+            counts.added++;
+          } else if (folder.updatedAt > existing.updatedAt) {
+            await db.folders.put(folder);
+            counts.updated++;
+          }
         }
         for (const tag of payload.tags) {
-          if (!(await db.tags.get(tag.id))) await db.tags.put(tag);
+          const existing = await db.tags.get(tag.id);
+          if (!existing) {
+            await db.tags.put(tag);
+            counts.added++;
+          } else if (
+            (tag.updatedAt ?? tag.createdAt) > (existing.updatedAt ?? existing.createdAt)
+          ) {
+            await db.tags.put(tag);
+            counts.updated++;
+          }
         }
         for (const note of payload.notes) {
           const existing = await db.notes.get(note.id);
           // Deterministic conflict handling: newest updatedAt wins.
-          if (!existing || note.updatedAt > existing.updatedAt) await db.notes.put(note);
+          if (!existing) {
+            await db.notes.put(note);
+            counts.added++;
+          } else if (note.updatedAt > existing.updatedAt) {
+            await db.notes.put(note);
+            counts.updated++;
+          }
         }
         for (const attachment of payload.attachments) {
-          if (!(await db.attachments.get(attachment.id))) await db.attachments.put(attachment);
+          const existing = await db.attachments.get(attachment.id);
+          if (!existing) {
+            await db.attachments.put(attachment);
+            counts.added++;
+          } else if (
+            (attachment.updatedAt ?? attachment.createdAt) >
+            (existing.updatedAt ?? existing.createdAt)
+          ) {
+            await db.attachments.put(attachment);
+            counts.updated++;
+          }
         }
         for (const reminder of deduplicatedReminders) {
           const existing = await db.reminders.get(reminder.id);
-          if (!existing || reminder.updatedAt > existing.updatedAt)
+          if (!existing) {
             await db.reminders.put(reminder);
+            counts.added++;
+          } else if (reminder.updatedAt > existing.updatedAt) {
+            await db.reminders.put(reminder);
+            counts.updated++;
+          }
         }
       }
     },
   );
+
+  // Deletions travel with the snapshot: apply them after the puts (so a
+  // tombstone beats a stale copy shipped in the same payload) and keep
+  // them locally so they propagate onward. Replace mode already took the
+  // payload as the whole truth, so it only records them.
+  if (payload.tombstones?.length) {
+    if (mode === "merge") counts.deleted += await applyTombstones(db, payload.tombstones);
+    await recordPayloadTombstones(db, payload.tombstones);
+  }
 
   // Clean up any remaining orphans or duplicate reminders
   await cleanupOrphanedReminders(db);
@@ -329,6 +546,8 @@ export async function applyBackup(
       await db.reminders.update(reminder.id, { notificationId: notifId });
     }
   }
+
+  return counts;
 }
 
 export async function recordBackup(

@@ -1,4 +1,5 @@
 import { type NomaDatabase, newId } from "./db";
+import { recordTombstone } from "./sync";
 import type { AttachmentMeta } from "./types";
 
 export interface CompressedImage {
@@ -75,13 +76,15 @@ export async function saveImageAttachment(
   file: File,
 ): Promise<AttachmentMeta> {
   const compressed = await compressAndResizeImage(file);
+  const now = Date.now();
   const attachment: AttachmentMeta = {
     id: newId(),
     noteId,
     name: file.name || "image.png",
     mimeType: compressed.mimeType,
     size: compressed.size,
-    createdAt: Date.now(),
+    createdAt: now,
+    updatedAt: now,
     data: compressed.dataUrl,
   };
   await db.attachments.put(attachment);
@@ -130,6 +133,13 @@ export async function cleanupOrphanedAttachments(
   if (orphaned.length === 0) return 0;
 
   await db.attachments.bulkDelete(orphaned.map((a) => a.id));
+  // Attachments removed here are genuinely deleted (their reference was
+  // edited away) — tombstone them so the deletion propagates. Attachments
+  // whose owning note was deleted are already gone by the time cleanup
+  // runs and are covered by the note's own tombstone cascade.
+  for (const attachment of orphaned) {
+    await recordTombstone(db, "attachment", attachment.id);
+  }
   return orphaned.length;
 }
 
