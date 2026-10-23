@@ -20,6 +20,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -29,9 +31,13 @@ import java.util.concurrent.Executors;
  * and hands it to the web layer's capture queue.
  *
  * MainActivity forwards its launch intent and every onNewIntent here.
- * The payload is held statically (the activity may be recreated before
- * the WebView asks for it) and is consumed on read: getSharedContent
- * returns it exactly once, so a share can never create two notes.
+ * Shared intents wait in a static FIFO queue: several shares can arrive
+ * before the web layer drains it (a cold launch may sit behind App Lock
+ * first), and every one of them must survive — a single pending slot
+ * would silently drop all but the last. getSharedContent pops the
+ * oldest payload per call, and each payload is returned exactly once,
+ * so a share can never create two notes. The queue is capped, with the
+ * oldest share dropped past the cap, so memory stays bounded.
  * Image streams are read on a background executor — never the bridge
  * thread — and size-capped before and during the read.
  */
@@ -43,7 +49,10 @@ public class NomaSharePlugin extends Plugin {
 
     private static final ExecutorService SHARE_EXECUTOR = Executors.newSingleThreadExecutor();
 
-    private static volatile Intent pendingShareIntent;
+    /** Maximum shares held for the web layer; the oldest is dropped past this. */
+    private static final int MAX_PENDING_SHARES = 25;
+
+    private static final Queue<Intent> PENDING_SHARE_INTENTS = new ConcurrentLinkedQueue<>();
     private static volatile NomaSharePlugin instance;
 
     /** Called by MainActivity for the launch intent and every new intent. */
@@ -53,7 +62,12 @@ public class NomaSharePlugin extends Plugin {
         if (!Intent.ACTION_SEND.equals(action) && !Intent.ACTION_SEND_MULTIPLE.equals(action)) {
             return;
         }
-        pendingShareIntent = intent;
+        // FIFO: an unread share must never be overwritten by a newer one.
+        // Past the cap the oldest is dropped so the queue stays bounded.
+        if (PENDING_SHARE_INTENTS.size() >= MAX_PENDING_SHARES) {
+            PENDING_SHARE_INTENTS.poll();
+        }
+        PENDING_SHARE_INTENTS.offer(intent);
         NomaSharePlugin current = instance;
         if (current != null) {
             current.notifyListeners("shareReceived", new JSObject());
@@ -72,14 +86,13 @@ public class NomaSharePlugin extends Plugin {
     }
 
     /**
-     * Resolves the pending shared content exactly once; a second call (or a
-     * call with nothing shared) resolves null. Extraction runs on the
-     * background executor because reading image streams can block.
+     * Resolves the oldest queued share; each payload is returned exactly
+     * once, and a call with an empty queue resolves null. Extraction runs
+     * on the background executor because reading image streams can block.
      */
     @PluginMethod
     public void getSharedContent(PluginCall call) {
-        Intent intent = pendingShareIntent;
-        pendingShareIntent = null;
+        Intent intent = PENDING_SHARE_INTENTS.poll();
         if (intent == null) {
             call.resolve();
             return;

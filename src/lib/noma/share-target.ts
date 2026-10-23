@@ -10,10 +10,11 @@ import {
 /**
  * Bridges the two share-target doors into the capture queue (capture.ts):
  *
- * - Android: the NomaShare plugin holds whatever the system shared into
- *   Noma (text + images). The web layer pulls it once at startup and again
- *   whenever the plugin reports a warm share. The native side consumes on
- *   read, so a payload can never be delivered twice.
+ * - Android: the NomaShare plugin queues whatever the system shared into
+ *   Noma (text + images) — several shares can land before the web layer
+ *   wakes up. The web layer drains that queue at startup and again
+ *   whenever the plugin reports a warm share. The native side consumes
+ *   on read, so a payload can never be delivered twice.
  * - Web (installed PWA): the /share-target route lands the Web Share
  *   Target GET params in sessionStorage; the boot check below folds them
  *   into the queue and clears the key immediately.
@@ -27,7 +28,7 @@ interface NativeSharedImage {
   dataBase64: string;
 }
 
-interface NativeSharedContent {
+export interface NativeSharedContent {
   title?: string;
   text?: string;
   url?: string;
@@ -61,25 +62,48 @@ function sessionStorageOrNull(): Storage | null {
 
 /* ---------------- Android share target ---------------- */
 
+/** Max payloads pulled per drain — mirrors the native queue's cap. */
+export const MAX_NATIVE_SHARE_DRAIN = 25;
+
+/**
+ * Pulls every pending native share into the capture queue, oldest first.
+ * The plugin pops one payload per call and resolves null once its queue
+ * is empty, so the drain loops until then (bounded by
+ * MAX_NATIVE_SHARE_DRAIN). A failed call stops the drain quietly — any
+ * payloads still queued natively are picked up by the next trigger.
+ * The getter is a parameter so the loop is testable without a device.
+ * Returns how many payloads were drained.
+ */
+export async function drainNativeShares(
+  getContent: () => Promise<NativeSharedContent | null>,
+): Promise<number> {
+  let drained = 0;
+  try {
+    for (let i = 0; i < MAX_NATIVE_SHARE_DRAIN; i++) {
+      const payload = await getContent();
+      if (!payload) break;
+      const raw: RawSharePayload = {
+        subject: payload.title ?? null,
+        text: payload.text ?? null,
+        url: payload.url ?? null,
+        images: (payload.images ?? []).map((image) => ({
+          name: image.name,
+          mimeType: image.mimeType,
+          dataUrl: `data:${image.mimeType};base64,${image.dataBase64}`,
+        })),
+      };
+      enqueueCapture(normalizeSharePayload(raw, "android-share", newCaptureId()));
+      drained += 1;
+    }
+  } catch {
+    /* a failed pull stops the drain — the rest stays queued natively */
+  }
+  return drained;
+}
+
 async function pullNativeShare(): Promise<void> {
   if (!isAndroidNative()) return;
-  try {
-    const payload = await NativeShare.getSharedContent();
-    if (!payload) return;
-    const raw: RawSharePayload = {
-      subject: payload.title ?? null,
-      text: payload.text ?? null,
-      url: payload.url ?? null,
-      images: (payload.images ?? []).map((image) => ({
-        name: image.name,
-        mimeType: image.mimeType,
-        dataUrl: `data:${image.mimeType};base64,${image.dataBase64}`,
-      })),
-    };
-    enqueueCapture(normalizeSharePayload(raw, "android-share", newCaptureId()));
-  } catch {
-    /* a failed pull loses nothing — the note simply isn't pre-created */
-  }
+  await drainNativeShares(() => NativeShare.getSharedContent());
 }
 
 /* ---------------- Web share target ---------------- */

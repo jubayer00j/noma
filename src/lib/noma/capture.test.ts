@@ -13,8 +13,11 @@ import {
 import {
   checkPwaShortcutParam,
   checkWebShareBoot,
+  drainNativeShares,
   storePendingWebShare,
+  MAX_NATIVE_SHARE_DRAIN,
   WEB_SHARE_STORAGE_KEY,
+  type NativeSharedContent,
 } from "./share-target";
 
 /* Minimal browser stand-ins: share-target.ts parks web shares in sessionStorage. */
@@ -259,5 +262,76 @@ describe("web share boot check", () => {
     // Param was stripped from the URL, so a re-run is a no-op.
     win.location.search = "";
     expect(checkPwaShortcutParam()).toBe(false);
+  });
+});
+
+describe("drainNativeShares", () => {
+  beforeEach(() => {
+    resetCaptureStateForTests();
+  });
+
+  /** A getSharedContent stand-in that hands out payloads in order, then null. */
+  const getterFrom = (payloads: (NativeSharedContent | null)[]) => {
+    let index = 0;
+    return async (): Promise<NativeSharedContent | null> => payloads[index++] ?? null;
+  };
+
+  /** Reads the capture queue oldest-first, consuming as it goes. */
+  const queuedRequests = (): CaptureRequest[] => {
+    const requests: CaptureRequest[] = [];
+    let head = getPendingCapture();
+    while (head) {
+      requests.push(head);
+      consumeCapture(head.id);
+      head = getPendingCapture();
+    }
+    return requests;
+  };
+
+  it("drains every queued payload, oldest first", async () => {
+    const getContent = getterFrom([
+      { title: "First", text: "one" },
+      { title: "Second", text: "two" },
+      { title: "Third", text: "three" },
+      null,
+    ]);
+    await expect(drainNativeShares(getContent)).resolves.toBe(3);
+    const requests = queuedRequests();
+    expect(requests.map((r) => (r.kind === "share" ? r.title : ""))).toEqual([
+      "First",
+      "Second",
+      "Third",
+    ]);
+    expect(requests.every((r) => r.source === "android-share")).toBe(true);
+  });
+
+  it("stops at the first null and enqueues nothing", async () => {
+    const getContent = getterFrom([null, { title: "Never reached", text: "x" }]);
+    await expect(drainNativeShares(getContent)).resolves.toBe(0);
+    expect(getPendingCapture()).toBeNull();
+  });
+
+  it("stops quietly when a pull fails mid-drain", async () => {
+    let calls = 0;
+    const getContent = async (): Promise<NativeSharedContent | null> => {
+      calls += 1;
+      if (calls === 2) throw new Error("bridge gone");
+      return { title: `Share ${calls}`, text: "body" };
+    };
+    await expect(drainNativeShares(getContent)).resolves.toBe(1);
+    const requests = queuedRequests();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ kind: "share", title: "Share 1" });
+  });
+
+  it("respects the drain bound when the plugin never runs dry", async () => {
+    let calls = 0;
+    const getContent = async (): Promise<NativeSharedContent | null> => {
+      calls += 1;
+      return { title: `Share ${calls}`, text: "body" };
+    };
+    await expect(drainNativeShares(getContent)).resolves.toBe(MAX_NATIVE_SHARE_DRAIN);
+    expect(calls).toBe(MAX_NATIVE_SHARE_DRAIN);
+    expect(queuedRequests()).toHaveLength(MAX_NATIVE_SHARE_DRAIN);
   });
 });
