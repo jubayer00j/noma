@@ -1,5 +1,6 @@
 import type { NomaDatabase } from "./db";
 import { createNote, updateNote } from "./notes";
+import { createNoteFromTemplate } from "./templates";
 import type { Note } from "./types";
 
 /**
@@ -75,16 +76,34 @@ async function findOrCreateDailyNote(
   }
 
   // Seed the new page from the daily-default template, if one is set.
+  // Instantiation goes through the "Use template" path so attachments
+  // are cloned and their refs remapped — the daily note owns its copies
+  // and keeps working if the template is later deleted forever. (Copying
+  // the template's raw content string instead would leave the daily
+  // note referencing attachment rows the template owns.)
   const dailyDefault = (
     await db.notes
       .filter((note) => Boolean(note.isTemplate) && Boolean(note.dailyDefault) && !note.deleted)
       .toArray()
   )[0];
-  const content = dailyDefault ? expandDatePlaceholder(dailyDefault.content, now) : "";
+  if (dailyDefault) {
+    const seeded = await createNoteFromTemplate(db, dailyDefault.id, now);
+    if (seeded) {
+      // The page is the day's own note: it takes the day's title and
+      // lives outside whatever folder/tag set the template carries.
+      await updateNote(db, seeded.id, {
+        title: formatDailyTitle(now),
+        dailyDate: key,
+        folderId: null,
+        tagIds: [],
+      });
+      return (await db.notes.get(seeded.id)) ?? seeded;
+    }
+  }
 
   const note = await createNote(db, { title: formatDailyTitle(now), dailyDate: key });
   // createNote stores its init verbatim; route the content through
   // updateNote so it is sanitised and word-counted like every other note.
-  await updateNote(db, note.id, { content });
+  await updateNote(db, note.id, { content: "" });
   return (await db.notes.get(note.id)) ?? note;
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { type NomaDatabase } from "./db";
 import { formatDailyTitle } from "./daily";
-import { createNote } from "./notes";
+import { createNote, duplicateNote } from "./notes";
 import { searchNotes } from "./search";
 import {
   BUILTIN_TEMPLATES,
@@ -271,6 +271,29 @@ describe("setDailyDefault", () => {
     await setDailyDefault(db, null);
     expect((await fake.notes.get(a.id))!.dailyDefault).toBe(false);
     expect((await fake.notes.get(b.id))!.dailyDefault).toBe(false);
+  });
+});
+
+describe("duplicateNote and the daily flags", () => {
+  it("duplicating the daily-default template keeps it a template but clears the default slot", async () => {
+    const fake = new FakeDb();
+    const db = asDb(fake);
+    const template = await createNote(db, {
+      title: "Morning",
+      content: "<p>Pages</p>",
+      isTemplate: true,
+      dailyDefault: true,
+    });
+
+    const copy = await duplicateNote(db, template.id);
+    expect(copy).not.toBeNull();
+    // Template duplication still makes a template…
+    expect(copy!.isTemplate).toBe(true);
+    // …but the copy must not become a second daily default, nor claim a day.
+    expect(copy!.dailyDefault).toBeFalsy();
+    expect(copy!.dailyDate).toBeNull();
+    // The original still holds the one default slot.
+    expect((await fake.notes.get(template.id))!.dailyDefault).toBe(true);
   });
 });
 

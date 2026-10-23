@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { type NomaDatabase } from "./db";
 import { formatDailyTitle, getOrCreateDailyNote, localDateKey } from "./daily";
-import { createNote } from "./notes";
+import { createNote, deleteNoteForever, duplicateNote } from "./notes";
 import type {
   AppSettings,
   AttachmentMeta,
@@ -191,6 +191,59 @@ describe("getOrCreateDailyNote", () => {
     expect(note.wordCount).toBeGreaterThan(0);
     // The title is the day's title, not the template's.
     expect(note.title).toBe(formatDailyTitle(TODAY));
+  });
+
+  it("clones the daily-default template's attachments into the daily note", async () => {
+    const fake = new FakeDb();
+    const db = asDb(fake);
+    const template = await createNote(db, {
+      title: "Morning with image",
+      content: '<p><img src="noma-attachment://att-daily"></p>',
+      isTemplate: true,
+      dailyDefault: true,
+    });
+    await fake.attachments.put({
+      id: "att-daily",
+      noteId: template.id,
+      name: "sunrise.png",
+      mimeType: "image/png",
+      size: 3,
+      createdAt: 1,
+      data: "data:image/png;base64,CCC",
+    });
+
+    const note = await getOrCreateDailyNote(db, TODAY);
+    expect(note.dailyDate).toBe(TODAY_KEY);
+    expect(note.title).toBe(formatDailyTitle(TODAY));
+    // The daily note owns a cloned attachment row, not the template's —
+    // the row-level clone is the durable evidence (see templates.test.ts
+    // for why content refs aren't asserted in the DOM-less environment).
+    const owned = (await fake.attachments.toArray()).filter((row) => row.noteId === note.id);
+    expect(owned).toHaveLength(1);
+    expect(owned[0]!.id).not.toBe("att-daily");
+    expect(owned[0]!.data).toBe("data:image/png;base64,CCC");
+
+    // Deleting the template forever removes ITS rows only; the daily
+    // note's image survives.
+    await deleteNoteForever(db, template.id);
+    expect(await fake.attachments.get("att-daily")).toBeUndefined();
+    expect(await fake.attachments.get(owned[0]!.id)).toBeTruthy();
+    const stored = await fake.notes.get(note.id);
+    expect(stored).toBeTruthy();
+    expect(stored!.dailyDate).toBe(TODAY_KEY);
+  });
+
+  it("duplicating a daily note does not clone its day", async () => {
+    const fake = new FakeDb();
+    const db = asDb(fake);
+    const original = await getOrCreateDailyNote(db, TODAY);
+    const copy = await duplicateNote(db, original.id);
+    expect(copy).not.toBeNull();
+    expect(copy!.dailyDate).toBeNull();
+    // Today still resolves to the original note, not the copy.
+    const again = await getOrCreateDailyNote(db, TODAY);
+    expect(again.id).toBe(original.id);
+    expect(await fake.notes.count()).toBe(2);
   });
 
   it("ignores a non-default template when seeding", async () => {

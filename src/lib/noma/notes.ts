@@ -106,6 +106,12 @@ export async function duplicateNote(db: NomaDatabase, id: string): Promise<Note 
     createdAt: now,
     updatedAt: now,
     reminderAt: null,
+    // A copy is a fresh note, never a second owner of the source's day:
+    // it must not inherit dailyDate (one daily note per day) nor the
+    // dailyDefault slot (exactly one template may hold it). isTemplate
+    // DOES carry over — duplicating a template yields a template.
+    dailyDate: null,
+    dailyDefault: false,
     title: source.title ? `${source.title} (copy)` : "Untitled (copy)",
   };
 

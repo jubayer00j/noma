@@ -975,6 +975,11 @@ export function Workspace() {
         }),
       useTemplate: async (note) => {
         if (!db) return;
+        // The template may be the note open in the editor, whose latest
+        // edits can still be waiting on the debounced autosave.
+        // createNoteFromTemplate reads the persisted record, so flush
+        // first — the new note is minted from the current text.
+        await flushPendingSave();
         const created = await createNoteFromTemplate(db, note.id);
         if (!created) return;
         setMobileNavOpen(false);
@@ -1030,7 +1035,7 @@ export function Workspace() {
           },
         }),
     }),
-    [db, openNote],
+    [db, openNote, flushPendingSave],
   );
 
   const searchResults = useMemo(
