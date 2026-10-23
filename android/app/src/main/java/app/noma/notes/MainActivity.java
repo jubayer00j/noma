@@ -1,5 +1,6 @@
 package app.noma.notes;
 
+import android.content.Intent;
 import android.os.Bundle;
 import android.view.View;
 import android.view.ViewGroup;
@@ -20,6 +21,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(NomaBiometricPlugin.class);
         registerPlugin(NomaAlarmPlugin.class);
         registerPlugin(NomaBackgroundBackupPlugin.class);
+        registerPlugin(NomaSharePlugin.class);
 
         SplashScreen splashScreen = SplashScreen.installSplashScreen(this);
         splashScreen.setOnExitAnimationListener(provider -> {
@@ -60,5 +62,18 @@ public class MainActivity extends BridgeActivity {
                         .start();
             }
         }, 1000);
+
+        // Hand the launch intent to the share target (a no-op for ordinary
+        // launches — the plugin only keeps ACTION_SEND / SEND_MULTIPLE).
+        NomaSharePlugin.onShareIntent(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        // super first: Capacitor's bridge needs it for appUrlOpen and the
+        // other plugins' intent handling.
+        super.onNewIntent(intent);
+        // singleTask: shares into a running Noma arrive here.
+        NomaSharePlugin.onShareIntent(intent);
     }
 }
