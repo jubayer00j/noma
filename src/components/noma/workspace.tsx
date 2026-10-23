@@ -1581,6 +1581,7 @@ export function Workspace() {
             <Search className="size-4 text-muted-foreground" />
             <Input
               autoFocus
+              enterKeyHint="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Search titles, content, tags and folders…"

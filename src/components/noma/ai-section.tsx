@@ -163,6 +163,7 @@ export function AiSection({ ownerId }: { ownerId: string | null }) {
                 <Label htmlFor="noma-ai-key">Gemini API key</Label>
                 <PasswordInput
                   id="noma-ai-key"
+                  enterKeyHint="done"
                   className="mt-1.5"
                   value={keyDraft}
                   onChange={(event) => setKeyDraft(event.target.value)}
