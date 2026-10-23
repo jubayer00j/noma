@@ -73,8 +73,14 @@ Ten items to make the Android app feel native, worked in order. (The roadmap abo
 - Dialogs and menus register themselves in an overlay registry, so hardware back can see them — they previously only answered to Escape. Non-cancelable dialogs (like the guest-migration prompt) consume the press without closing.
 - Predictive back opted in (`enableOnBackInvokedCallback`) for the Android 13+ gesture and its back-to-home preview at the root.
 
+### Edge-to-edge — PR #71
+- The window stays edge-to-edge after the splash: content draws behind transparent status and navigation bars instead of dropping back into a letterboxed layout (Android 15+ forced this anyway — now it's deliberate on every version).
+- Every shell respects the safe-area insets — workspace, sidebar, Settings, the lock screen, sheets and drawers — so nothing hides under the bars or the gesture pill. Verified in the built CSS cascade, not just written.
+- Bar icon contrast follows the in-app theme (light/nature → dark icons, dark/AMOLED → light icons, "system" flips live with the OS), driven through the official StatusBar plugin — pinned to transparent with no overlay in config, so its load-time defaults can't fight the design.
+
 ### Device-only proofs
 - Back from Settings returns to the workspace every time; back with a menu or dialog open closes it first; back at the lock screen minimizes and reveals nothing; predictive-back preview on Android 13+.
+- **Edge-to-edge (#71):** bars stay transparent in every theme; headers clear the status bar; sheets and drawers clear the gesture area; cutout insets in landscape.
 
 ## 2026-10-22
 
