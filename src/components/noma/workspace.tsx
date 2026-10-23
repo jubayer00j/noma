@@ -13,6 +13,7 @@ import {
   Plus,
   RotateCcw,
   Search,
+  Sparkles,
   Star,
   Trash2,
   WifiOff,
@@ -64,6 +65,10 @@ import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { useOnline, useSettings } from "@/hooks/use-noma";
 import { useDatabase } from "@/lib/noma/DatabaseContext";
+import { useAuth } from "@/lib/noma/auth";
+import { aiActionsAvailable, getAiSettings, type AiSettings } from "@/lib/noma/ai";
+import { AiDialog, type AiDialogMode } from "./ai-dialog";
+import { AI_SETTINGS_CHANGED_EVENT } from "./ai-section";
 import { useAppLock } from "@/lib/noma/AppLockContext";
 import { usePendingShortcut } from "@/lib/noma/shortcut";
 import { usePendingCapture, type CaptureRequest } from "@/lib/noma/capture";
@@ -125,6 +130,8 @@ interface NoteOverflowMenuProps {
   onMoveToFolder: (folderId: string | null) => void;
   onSetReminder: () => void;
   onDuplicate: () => void;
+  onAiSummarize?: (() => void) | undefined;
+  onAiSuggestTags?: (() => void) | undefined;
   onVersionHistory?: () => void;
   onToggleArchive: () => void;
   onTrash: () => void;
@@ -150,6 +157,8 @@ function NoteOverflowMenu({
   onMoveToFolder,
   onSetReminder,
   onDuplicate,
+  onAiSummarize,
+  onAiSuggestTags,
   onVersionHistory,
   onToggleArchive,
   onTrash,
@@ -213,6 +222,21 @@ function NoteOverflowMenu({
               </DropdownMenuItem>
             ))}
             <DropdownMenuSeparator />
+            {(onAiSummarize || onAiSuggestTags) && (
+              <>
+                {onAiSummarize && (
+                  <DropdownMenuItem onClick={onAiSummarize}>
+                    <Sparkles className="size-4 text-primary" /> Summarize
+                  </DropdownMenuItem>
+                )}
+                {onAiSuggestTags && (
+                  <DropdownMenuItem onClick={onAiSuggestTags}>
+                    <Sparkles className="size-4 text-primary" /> Suggest tags
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuSeparator />
+              </>
+            )}
             <DropdownMenuItem onClick={onSetReminder}>
               <Bell className="size-4 text-primary" />
               {note.reminderAt ? "Edit Reminder" : "Set Reminder"}
@@ -557,6 +581,23 @@ async function dataUrlToFile(dataUrl: string, name: string, mimeType: string): P
 
 export function Workspace() {
   const { db, loading: dbLoading } = useDatabase();
+  const auth = useAuth();
+  const ownerId = auth.user?.uid ?? null;
+  // Opt-in AI (see ai.ts): the settings record lives in localStorage;
+  // refresh on account change, on the Settings section's change event,
+  // and when the window regains focus (returning from Settings).
+  const [aiSettings, setAiSettings] = useState<AiSettings | null>(() => getAiSettings(ownerId));
+  useEffect(() => {
+    const refresh = () => setAiSettings(getAiSettings(ownerId));
+    refresh();
+    window.addEventListener(AI_SETTINGS_CHANGED_EVENT, refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.removeEventListener(AI_SETTINGS_CHANGED_EVENT, refresh);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [ownerId]);
+  const [aiDialog, setAiDialog] = useState<{ noteId: string; mode: AiDialogMode } | null>(null);
   const notes = useLiveQuery(() => db?.notes.toArray() ?? [], [db], undefined);
   const folders = useLiveQuery(() => db?.folders.orderBy("name").toArray() ?? [], [db], undefined);
   const tags = useLiveQuery(() => db?.tags.orderBy("name").toArray() ?? [], [db], undefined);
@@ -1238,6 +1279,22 @@ export function Workspace() {
       onMoveToFolder={(folderId) => void moveNote(db!, activeNote.id, folderId)}
       onSetReminder={() => setReminderTargetNote(activeNote)}
       onDuplicate={() => actions.duplicate(activeNote)}
+      onAiSummarize={
+        aiActionsAvailable(activeNote, aiSettings)
+          ? () =>
+              void flushPendingSave().then(() =>
+                setAiDialog({ noteId: activeNote.id, mode: "summarize" }),
+              )
+          : undefined
+      }
+      onAiSuggestTags={
+        aiActionsAvailable(activeNote, aiSettings)
+          ? () =>
+              void flushPendingSave().then(() =>
+                setAiDialog({ noteId: activeNote.id, mode: "tags" }),
+              )
+          : undefined
+      }
       onVersionHistory={() => setVersionHistoryNote(activeNote)}
       onLockNote={() => setLockDialog({ note: activeNote, mode: "setup" })}
       onManageLock={() => setLockDialog({ note: activeNote, mode: "manage" })}
@@ -1591,6 +1648,26 @@ export function Workspace() {
           onRestore={handleRestoreVersion}
         />
       )}
+
+      {aiDialog &&
+        db &&
+        (() => {
+          // Always hand the dialog the freshest stored row (the pending
+          // editor save was flushed before it opened).
+          const dialogNote = allNotes.find((n) => n.id === aiDialog.noteId);
+          if (!dialogNote) return null;
+          return (
+            <AiDialog
+              open
+              onOpenChange={(open) => !open && setAiDialog(null)}
+              mode={aiDialog.mode}
+              note={dialogNote}
+              db={db}
+              ownerId={ownerId}
+              allTags={allTags}
+            />
+          );
+        })()}
 
       <AlertDialog
         open={Boolean(confirmation)}
