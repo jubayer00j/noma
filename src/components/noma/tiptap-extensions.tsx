@@ -6,12 +6,14 @@ import Placeholder from "@tiptap/extension-placeholder";
 import { Table, TableCell, TableHeader, TableRow } from "@tiptap/extension-table";
 import { BackgroundColor, Color, TextStyle } from "@tiptap/extension-text-style";
 import Underline from "@tiptap/extension-underline";
-import { type AnyExtension } from "@tiptap/core";
-import { ReactNodeViewRenderer, type NodeViewProps } from "@tiptap/react";
+import { mergeAttributes, Node, type AnyExtension } from "@tiptap/core";
+import { ReactNodeViewRenderer, NodeViewWrapper, type NodeViewProps } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import Suggestion, { type SuggestionOptions } from "@tiptap/suggestion";
 import { useEffect, useState } from "react";
 import { useDatabase } from "@/lib/noma/DatabaseContext";
 import { NomaChartNode } from "./chart-node";
+import { createNoteLinkSuggestionRender, type NoteLinkItem } from "./note-link-picker";
 import { useNoteSessionAttachments } from "./note-session-context";
 
 /**
@@ -63,12 +65,108 @@ const NomaImageNode = Image.extend({
   },
 });
 
+/** Editor rendering of a note-link chip: an inert pill (snapshot label).
+ * Clicking selects the atom; navigation lives in the Read View and the
+ * backlinks panel, never mid-edit. */
+function NoteLinkChipView({ node }: NodeViewProps) {
+  return (
+    <NodeViewWrapper
+      as="span"
+      data-note-link=""
+      data-note-id={(node.attrs["noteId"] as string | null) ?? ""}
+      className="noma-note-link-chip"
+    >
+      {(node.attrs["label"] as string) ?? ""}
+    </NodeViewWrapper>
+  );
+}
+
+interface NoteLinkNodeOptions {
+  suggestion: Partial<SuggestionOptions<NoteLinkItem, NoteLinkItem>>;
+}
+
+/**
+ * Inline atom linking to another note by id. Serialises as
+ * `<span data-note-link data-note-id="…">Label</span>` — the id makes the
+ * link rename-proof, the label is the title snapshot from insertion time
+ * (the Read View re-resolves it to the live title). The `[[` suggestion
+ * plugin is attached only when the host supplies an items callback
+ * (i.e. in the workspace editor); the bare node keeps the schema able to
+ * parse existing chips anywhere else.
+ */
+export const NoteLinkNode = Node.create<NoteLinkNodeOptions>({
+  name: "noteLink",
+  group: "inline",
+  inline: true,
+  atom: true,
+  selectable: true,
+  draggable: false,
+
+  addOptions() {
+    return {
+      suggestion: {},
+    };
+  },
+
+  addAttributes() {
+    return {
+      noteId: {
+        default: null,
+        parseHTML: (element) => element.getAttribute("data-note-id"),
+        renderHTML: (attributes) =>
+          attributes["noteId"] ? { "data-note-id": attributes["noteId"] as string } : {},
+      },
+      label: {
+        default: "",
+        parseHTML: (element) => element.textContent ?? "",
+        renderHTML: () => ({}),
+      },
+    };
+  },
+
+  parseHTML() {
+    return [{ tag: "span[data-note-link]" }];
+  },
+
+  renderHTML({ node, HTMLAttributes }) {
+    return [
+      "span",
+      mergeAttributes(HTMLAttributes, { "data-note-link": "" }),
+      (node.attrs["label"] as string) ?? "",
+    ];
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(NoteLinkChipView);
+  },
+
+  addProseMirrorPlugins() {
+    const suggestion = this.options.suggestion;
+    if (typeof suggestion.items !== "function" || typeof suggestion.render !== "function") {
+      return [];
+    }
+    return [
+      Suggestion({
+        editor: this.editor,
+        char: "[[",
+        ...suggestion,
+      }),
+    ];
+  },
+});
+
 export interface NomaExtensionsOptions {
   /**
    * When true, the extensions are tuned for the read-only Read View:
    * links open on click and the editor placeholder is omitted.
    */
   readOnly?: boolean;
+  /**
+   * Supplies `[[` picker candidates for a query. When provided (and not
+   * read-only), the note-link node gains its suggestion picker; when
+   * omitted, link chips still parse and render but can't be inserted.
+   */
+  noteLinkItems?: (query: string) => NoteLinkItem[];
 }
 
 /**
@@ -76,7 +174,35 @@ export interface NomaExtensionsOptions {
  * editor and the read-only Read View so both render notes identically.
  */
 export function createNomaExtensions(options: NomaExtensionsOptions = {}): AnyExtension[] {
-  const { readOnly = false } = options;
+  const { readOnly = false, noteLinkItems } = options;
+  const noteLink =
+    !readOnly && noteLinkItems
+      ? NoteLinkNode.configure({
+          suggestion: {
+            items: ({ query }) => noteLinkItems(query),
+            command: ({ editor, range, props }) => {
+              // Mirror @tiptap/extension-mention: if the character after
+              // the match is a space it is consumed as the separator, so
+              // the chip doesn't end up doubled-spaced.
+              const nodeAfter = editor.view.state.selection.$to.nodeAfter;
+              const overrideSpace = nodeAfter?.text?.startsWith(" ");
+              if (overrideSpace) range.to += 1;
+              editor
+                .chain()
+                .focus()
+                .insertContentAt(range, [
+                  {
+                    type: "noteLink",
+                    attrs: { noteId: props.id, label: props.title },
+                  },
+                  { type: "text", text: " " },
+                ])
+                .run();
+            },
+            render: createNoteLinkSuggestionRender,
+          },
+        })
+      : NoteLinkNode;
   return [
     StarterKit.configure({
       heading: { levels: [1, 2, 3] },
@@ -92,6 +218,7 @@ export function createNomaExtensions(options: NomaExtensionsOptions = {}): AnyEx
     BackgroundColor,
     Highlight,
     NomaImageNode.configure({ inline: false }),
+    noteLink,
     TaskList,
     TaskItem.configure({ nested: true }),
     Table.configure({ resizable: false }),

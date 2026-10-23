@@ -52,6 +52,7 @@ import { useDatabase } from "@/lib/noma/DatabaseContext";
 import { saveImageAttachment, scheduleDebouncedAttachmentCleanup } from "@/lib/noma/media";
 import { ChartEditorDialog, type AdvancedChartData } from "./chart-node";
 import { createNomaExtensions } from "./tiptap-extensions";
+import type { NoteLinkItem } from "./note-link-picker";
 
 export type SaveState = "idle" | "saving" | "saved" | "offline";
 
@@ -61,6 +62,8 @@ interface NoteEditorProps {
   fontSize: number;
   editorWidth: number;
   lineHeight: number;
+  /** Candidates for the `[[` note-link picker; omit to disable inserting links. */
+  noteLinkItems?: (query: string) => NoteLinkItem[];
 }
 
 function ToolbarButton({
@@ -465,7 +468,14 @@ function Toolbar({
   );
 }
 
-export function NoteEditor({ note, onChange, fontSize, editorWidth, lineHeight }: NoteEditorProps) {
+export function NoteEditor({
+  note,
+  onChange,
+  fontSize,
+  editorWidth,
+  lineHeight,
+  noteLinkItems,
+}: NoteEditorProps) {
   const { db } = useDatabase();
   const [showToolbar, setShowToolbar] = useState(true);
   const [tableDialogOpen, setTableDialogOpen] = useState(false);
@@ -484,6 +494,14 @@ export function NoteEditor({ note, onChange, fontSize, editorWidth, lineHeight }
     onChangeRef.current = onChange;
   }, [onChange]);
 
+  // The editor (and its extension set) is created once per note; route the
+  // `[[` candidate lookup through a ref so the picker always sees the
+  // freshest library, not the notes as of editor creation.
+  const noteLinkItemsRef = useRef(noteLinkItems);
+  useEffect(() => {
+    noteLinkItemsRef.current = noteLinkItems;
+  }, [noteLinkItems]);
+
   const dbRef = useRef(db);
   useEffect(() => {
     dbRef.current = db;
@@ -492,7 +510,11 @@ export function NoteEditor({ note, onChange, fontSize, editorWidth, lineHeight }
   const editor = useEditor(
     {
       immediatelyRender: false,
-      extensions: createNomaExtensions(),
+      extensions: createNomaExtensions(
+        noteLinkItems
+          ? { noteLinkItems: (query) => noteLinkItemsRef.current?.(query) ?? [] }
+          : {},
+      ),
       content: note.content,
       editorProps: { attributes: { class: "tiptap", spellcheck: "true" } },
       onUpdate: ({ editor: instance }) => {

@@ -566,6 +566,58 @@
   text-underline-offset: 3px;
 }
 
+/* Note-link chips ([[ links): one pill style for the editor node view and
+   the Read View's resolved spans. The link glyph is a mask so it takes the
+   chip's text colour in every theme. */
+.noma-editor .tiptap span[data-note-link] {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  padding: 0.02em 0.5em;
+  border-radius: 999px;
+  background: var(--color-secondary);
+  color: var(--color-primary);
+  font-size: 0.92em;
+  font-weight: 500;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+.noma-editor .tiptap span[data-note-link]::before {
+  content: "";
+  flex: none;
+  width: 0.85em;
+  height: 0.85em;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 17H7A5 5 0 0 1 7 7h2'/%3E%3Cpath d='M15 7h2a5 5 0 1 1 0 10h-2'/%3E%3Cline x1='8' x2='16' y1='12' y2='12'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 17H7A5 5 0 0 1 7 7h2'/%3E%3Cpath d='M15 7h2a5 5 0 1 1 0 10h-2'/%3E%3Cline x1='8' x2='16' y1='12' y2='12'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+}
+.noma-editor .tiptap span[data-note-link][data-link-state="live"] {
+  cursor: pointer;
+}
+.noma-editor .tiptap span[data-note-link][data-link-state="live"]:hover {
+  background: var(--color-accent);
+}
+.noma-editor .tiptap span[data-note-link][data-link-state="trashed"],
+.noma-editor .tiptap span[data-note-link][data-link-state="missing"] {
+  background: var(--color-muted);
+  color: var(--color-muted-foreground);
+}
+.noma-editor .tiptap span[data-note-link][data-link-state="trashed"] {
+  text-decoration: line-through;
+}
+.noma-editor .tiptap span[data-note-link].ProseMirror-selectednode {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 1px;
+}
+
+/* The `[[` match while the link picker is open. */
+.noma-editor .tiptap .suggestion {
+  background: var(--color-accent);
+  border-radius: 3px;
+}
+
 .noma-editor .tiptap img {
   max-width: 100%;
   border-radius: 8px;

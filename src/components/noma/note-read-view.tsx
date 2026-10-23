@@ -12,6 +12,10 @@ interface NoteReadViewProps {
   fontSize: number;
   editorWidth: number;
   lineHeight: number;
+  /** Live note lookup for resolving link chips; forwarded to the content renderer. */
+  notesById?: ReadonlyMap<string, Note>;
+  /** Opens the target of a clicked live link chip. */
+  onOpenNote?: (noteId: string) => void;
 }
 
 /**
@@ -28,6 +32,8 @@ export function NoteReadView({
   fontSize,
   editorWidth,
   lineHeight,
+  notesById,
+  onOpenNote,
 }: NoteReadViewProps) {
   const folder = folders.find((item) => item.id === note.folderId) ?? null;
   const noteTags = tags.filter((tag) => note.tagIds.includes(tag.id));
@@ -75,7 +81,7 @@ export function NoteReadView({
       {/* `.noma-editor` scopes the shared content typography; the content is
           rendered statically (no editor instance, cursor, or chrome). */}
       <div className="noma-editor">
-        <NoteReadContent content={note.content} />
+        <NoteReadContent content={note.content} notesById={notesById} onOpenNote={onOpenNote} />
       </div>
     </article>
   );

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { sanitizeHtml } from "@/lib/noma/sanitize";
+import type { Note } from "@/lib/noma/types";
 import { NoteReadContent } from "./note-read-content";
 import { parseChartElement } from "./chart-node";
 
@@ -379,5 +380,101 @@ describe("NoteReadContent static rendering", () => {
     } finally {
       console.error = origError;
     }
+  });
+});
+
+describe("NoteReadContent note-link chips", () => {
+  function makeLinkedNote(id: string, title: string, extra: Partial<Note> = {}): Note {
+    return {
+      id,
+      title,
+      content: "",
+      contentFormat: "tiptap-html",
+      createdAt: 1,
+      updatedAt: 1,
+      folderId: null,
+      tagIds: [],
+      pinned: false,
+      favorite: false,
+      archived: false,
+      deleted: false,
+      deletedAt: null,
+      reminderAt: null,
+      wordCount: 0,
+      ...extra,
+    };
+  }
+
+  async function renderWithLinks(
+    content: string,
+    notesById: ReadonlyMap<string, Note>,
+    onOpenNote: (noteId: string) => void,
+  ) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <NoteReadContent content={content} notesById={notesById} onOpenNote={onOpenNote} />,
+      );
+    });
+    return { container, root };
+  }
+
+  const chipHtml = (id: string, label: string) =>
+    `<p>See <span data-note-link="" data-note-id="${id}">${label}</span> now.</p>`;
+
+  it("resolves a live target to its current title and opens it on click", async () => {
+    const target = makeLinkedNote("t1", "Renamed Plan");
+    const onOpenNote = vi.fn();
+    const { container } = await renderWithLinks(
+      chipHtml("t1", "Old Snapshot Title"),
+      new Map([["t1", target]]),
+      onOpenNote,
+    );
+    const chip = tiptapOf(container).querySelector<HTMLElement>("span[data-note-link]");
+    expect(chip?.textContent).toBe("Renamed Plan");
+    expect(chip?.dataset["linkState"]).toBe("live");
+
+    await act(async () => {
+      chip?.click();
+    });
+    expect(onOpenNote).toHaveBeenCalledTimes(1);
+    expect(onOpenNote).toHaveBeenCalledWith("t1");
+  });
+
+  it("renders a trashed target muted with its title, and never opens it", async () => {
+    const target = makeLinkedNote("t2", "Binned Note", { deleted: true, deletedAt: 9 });
+    const onOpenNote = vi.fn();
+    const { container } = await renderWithLinks(
+      chipHtml("t2", "Snapshot"),
+      new Map([["t2", target]]),
+      onOpenNote,
+    );
+    const chip = tiptapOf(container).querySelector<HTMLElement>("span[data-note-link]");
+    expect(chip?.textContent).toBe("Binned Note");
+    expect(chip?.dataset["linkState"]).toBe("trashed");
+
+    await act(async () => {
+      chip?.click();
+    });
+    expect(onOpenNote).not.toHaveBeenCalled();
+  });
+
+  it("renders a missing target with its snapshot label, inert", async () => {
+    const onOpenNote = vi.fn();
+    const { container } = await renderWithLinks(
+      chipHtml("gone", "Ghost Note"),
+      new Map(),
+      onOpenNote,
+    );
+    const chip = tiptapOf(container).querySelector<HTMLElement>("span[data-note-link]");
+    expect(chip?.textContent).toBe("Ghost Note");
+    expect(chip?.dataset["linkState"]).toBe("missing");
+
+    await act(async () => {
+      chip?.click();
+    });
+    expect(onOpenNote).not.toHaveBeenCalled();
   });
 });

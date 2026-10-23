@@ -41,6 +41,9 @@ const ALLOWED_ATTRS: Record<string, Set<string>> = {
   INPUT: new Set(["type", "checked", "disabled"]),
   TD: new Set(["colspan", "rowspan"]),
   TH: new Set(["colspan", "rowspan"]),
+  // Note-link chips (see links.ts): the marker + target id must survive
+  // sanitising or every link would be stripped on the next autosave.
+  SPAN: new Set(["data-note-link", "data-note-id"]),
   DIV: new Set([
     "data-type",
     "data-version",
