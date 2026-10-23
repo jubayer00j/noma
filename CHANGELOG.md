@@ -87,11 +87,16 @@ Ten items to make the Android app feel native, worked in order. (The roadmap abo
 - A small, deliberate haptic vocabulary — and nothing more. A swipe that crosses the commit threshold ticks faintly under the finger; releasing to Pin or Restore answers with a light tap, Trash with a firmer one. The App Lock and locked notes buzz the success pattern when the gate opens and the warning pattern on a wrong credential.
 - Everything else stays silent by design — taps, menu actions, typing, autosave, backups. Haptics are punctuation, not narration. One toggle (Settings → Appearance → Haptic feedback, on by default), native-only — the web app never vibrates — behind a fire-and-forget bridge (official `@capacitor/haptics`), so a haptics failure can never break the action it decorates.
 
+### Splash handoff — PR #75
+- The native splash overlay used to dismiss on a fixed one-second guess: dead time on fast devices (app painted, waiting behind the artwork) and a blank-WebView flash risk on slow ones. It now dismisses when the web layer signals its first painted frame — AppGate's first mount, one tiny bridge call — with two guardrails: never before 500ms (a shorter artwork flash reads as a glitch) and never after 3 seconds (if the web layer never signals, the fallback fires anyway — the splash can never trap you).
+- The artwork also fades in gently over the system splash's blank dark field instead of popping, and BootScreen is untouched — it stays theme-aware, exactly as designed; the dark native stages remain a brief brand moment before it.
+
 ### Device-only proofs
 - Back from Settings returns to the workspace every time; back with a menu or dialog open closes it first; back at the lock screen minimizes and reveals nothing; predictive-back preview on Android 13+.
 - **Edge-to-edge (#71):** bars stay transparent in every theme; headers clear the status bar; sheets and drawers clear the gesture area; cutout insets in landscape.
 - **Swipe actions (#73):** swipe feel in the Android WebView; vertical scroll never hijacked; tap still opens; half-swiped rows reset on scroll; Undo toast reachable and tappable above the gesture bar; trash-view left swipe opens the confirm dialog; locked-note swipe round-trip.
 - **Haptics (#74):** slow swipe ticks the moment the underlay arms (and re-ticks after dropping back below the threshold); trash commit feels firmer than pin; wrong PIN warns and the right PIN confirms at both the App Lock and a locked note; the Settings toggle silences everything immediately; behaviour with system touch-feedback disabled noted.
+- **Splash handoff (#75):** cold start, fast path — artwork shows briefly (never a strobe), the app arrives with no dead pause and no white flash; cold start under load or freshly cleared storage — the artwork stays until the app paints, never fading onto a blank WebView; light and dark theme starts both feel continuous, bars appear once and stay edge-to-edge; share-sheet / QS-tile / widget cold starts land in their flows as before; with App Lock on, overlay → BootScreen → lock screen with no frame of note content in between.
 
 ## 2026-10-22
 

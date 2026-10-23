@@ -8,6 +8,7 @@ import { useAuth } from "@/lib/noma/auth";
 import { applyTheme } from "@/lib/noma/theme";
 import { syncSystemBarsToTheme } from "@/lib/noma/system-bars";
 import { setHapticsEnabled } from "@/lib/noma/haptics";
+import { signalSplashReady } from "@/lib/noma/splash-handoff";
 import { useAppLock } from "@/lib/noma/AppLockContext";
 import { LockScreen } from "./lock-screen";
 
@@ -44,6 +45,23 @@ export function AppGate({ children }: { children: ReactNode }) {
     if (!ready) return;
     setHapticsEnabled(settings.hapticsEnabled);
   }, [settings.hapticsEnabled, ready]);
+
+  // Splash handoff (native-feel #5): AppGate is the first shell to mount
+  // on every cold start — it renders BootScreen while auth/lock/db
+  // resolve. Once its first frame has painted (double rAF ≈ React
+  // committed + browser painted), tell the native splash overlay it can
+  // dismiss on readiness instead of waiting out its fallback timer.
+  // Native-only and single-fire inside the bridge; a no-op on web.
+  useEffect(() => {
+    let inner = 0;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => signalSplashReady());
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, []);
 
   if (auth.configured && auth.loading) {
     return <BootScreen />;
