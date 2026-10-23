@@ -1,7 +1,17 @@
 import type { Folder, Note, Tag } from "./types";
 
 export type ViewKind =
-  "all" | "recent" | "pinned" | "favorites" | "archive" | "trash" | "folder" | "tag" | "reminders";
+  | "all"
+  | "recent"
+  | "pinned"
+  | "favorites"
+  | "archive"
+  | "trash"
+  | "folder"
+  | "tag"
+  | "reminders"
+  | "daily"
+  | "templates";
 
 export interface ViewState {
   kind: ViewKind;
@@ -11,11 +21,31 @@ export interface ViewState {
 const RECENT_WINDOW = 1000 * 60 * 60 * 24 * 7;
 
 export function filterNotes(notes: Note[], view: ViewState): Note[] {
-  const live = notes.filter((note) => !note.deleted);
+  // Templates are partitioned out of every ordinary view before anything
+  // else runs: they are starting points for notes, not notes themselves,
+  // and may only ever surface in the Templates view.
+  if (view.kind === "templates") {
+    return notes
+      .filter((note) => note.isTemplate && !note.deleted)
+      .sort((a, b) => a.title.localeCompare(b.title) || b.updatedAt - a.updatedAt);
+  }
+  if (view.kind === "daily") {
+    // Journal order: newest day first. `dailyDate` is a local YYYY-MM-DD
+    // key, so lexicographic order is chronological order. No pinned float.
+    return notes
+      .filter((note) => !note.isTemplate && !note.deleted && Boolean(note.dailyDate))
+      .sort((a, b) => {
+        if (a.dailyDate !== b.dailyDate) return (a.dailyDate ?? "") < (b.dailyDate ?? "") ? 1 : -1;
+        return b.updatedAt - a.updatedAt;
+      });
+  }
+
+  const regular = notes.filter((note) => !note.isTemplate);
+  const live = regular.filter((note) => !note.deleted);
   let result: Note[];
   switch (view.kind) {
     case "trash":
-      result = notes.filter((note) => note.deleted);
+      result = regular.filter((note) => note.deleted);
       break;
     case "archive":
       result = live.filter((note) => note.archived);
@@ -59,6 +89,10 @@ export function viewTitle(view: ViewState, folders: Folder[], tags: Tag[]): stri
       return "Trash";
     case "reminders":
       return "Reminders";
+    case "daily":
+      return "Daily notes";
+    case "templates":
+      return "Templates";
     case "folder":
       return folders.find((folder) => folder.id === view.id)?.name ?? "Folder";
     case "tag": {

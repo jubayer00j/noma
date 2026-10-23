@@ -5,9 +5,12 @@ import {
   Archive,
   ArchiveRestore,
   Bell,
+  CalendarCheck,
+  Check,
   Copy,
   FolderInput,
   Image as ImageIcon,
+  LayoutTemplate,
   Lock,
   LockOpen,
   MoreHorizontal,
@@ -53,6 +56,12 @@ export interface NoteActions {
   deleteForever: (note: Note) => void;
   /** Opens the per-note lock setup dialog (unlocked notes only). */
   lockNote?: (note: Note) => void;
+  /** Copies the note into a template (hidden for locked notes and templates). */
+  saveAsTemplate?: (note: Note) => void;
+  /** Creates a fresh note from a template note. */
+  useTemplate?: (note: Note) => void;
+  /** Toggles whether a template seeds new daily notes. */
+  toggleDailyDefault?: (note: Note) => void;
 }
 
 interface NoteListProps {
@@ -80,6 +89,14 @@ const EMPTY_COPY: Record<string, { title: string; body: string }> = {
   reminders: {
     title: "No reminders set",
     body: "Set reminders on your notes to keep track of tasks.",
+  },
+  daily: {
+    title: "No daily notes yet",
+    body: "Tap Today in the sidebar to start today's page.",
+  },
+  templates: {
+    title: "No templates yet",
+    body: "Save any note as a template, or start from a blank one. {{date}} in a template becomes today's date when you use it.",
   },
   default: {
     title: "No notes here yet",
@@ -241,17 +258,40 @@ const NoteItem = memo(function NoteItem({
                   <DropdownMenuItem onClick={() => actions.duplicate(note)}>
                     <Copy className="size-4" /> Duplicate
                   </DropdownMenuItem>
-                  {locked ? (
-                    <DropdownMenuItem onClick={() => actions.open(note)}>
-                      <LockOpen className="size-4" /> Unlock note
-                    </DropdownMenuItem>
+                  {note.isTemplate ? (
+                    <>
+                      {actions.useTemplate && (
+                        <DropdownMenuItem onClick={() => actions.useTemplate?.(note)}>
+                          <NotebookPen className="size-4" /> Use template
+                        </DropdownMenuItem>
+                      )}
+                      {actions.toggleDailyDefault && (
+                        <DropdownMenuItem onClick={() => actions.toggleDailyDefault?.(note)}>
+                          <CalendarCheck className="size-4" /> Use as daily template
+                          {note.dailyDefault && <Check className="ml-auto size-4" />}
+                        </DropdownMenuItem>
+                      )}
+                    </>
                   ) : (
-                    actions.lockNote && (
-                      <DropdownMenuItem onClick={() => actions.lockNote?.(note)}>
-                        <Lock className="size-4" /> Lock note
+                    !locked &&
+                    actions.saveAsTemplate && (
+                      <DropdownMenuItem onClick={() => actions.saveAsTemplate?.(note)}>
+                        <LayoutTemplate className="size-4" /> Save as template
                       </DropdownMenuItem>
                     )
                   )}
+                  {!note.isTemplate &&
+                    (locked ? (
+                      <DropdownMenuItem onClick={() => actions.open(note)}>
+                        <LockOpen className="size-4" /> Unlock note
+                      </DropdownMenuItem>
+                    ) : (
+                      actions.lockNote && (
+                        <DropdownMenuItem onClick={() => actions.lockNote?.(note)}>
+                          <Lock className="size-4" /> Lock note
+                        </DropdownMenuItem>
+                      )
+                    ))}
                   <DropdownMenuSub>
                     <DropdownMenuSubTrigger>
                       <FolderInput className="size-4" /> Move to

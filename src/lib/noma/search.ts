@@ -22,6 +22,8 @@ export function searchNotes(
 
   const results: SearchResult[] = [];
   for (const note of notes) {
+    // Templates are starting points, not notes: never search them.
+    if (note.isTemplate) continue;
     const title = note.title.toLowerCase();
     // Locked notes are title-only: their sealed body is never searched and
     // never appears in a snippet.

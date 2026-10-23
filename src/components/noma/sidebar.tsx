@@ -2,13 +2,16 @@ import { Link } from "@tanstack/react-router";
 import {
   Archive,
   Bell,
+  CalendarDays,
   ChevronLeft,
   Clock,
   FileText,
   Folder as FolderIcon,
   Hash,
   HelpCircle,
+  LayoutTemplate,
   MoreHorizontal,
+  NotebookPen,
   Pencil,
   Pin,
   Plus,
@@ -36,6 +39,7 @@ interface SidebarProps {
   view: ViewState;
   onSelectView: (view: ViewState) => void;
   onNewNote: () => void;
+  onOpenToday: () => void;
   onCreateFolder: () => void;
   onRenameFolder: (folder: Folder) => void;
   onDeleteFolder: (folder: Folder) => void;
@@ -86,6 +90,7 @@ export function NomaSidebar({
   view,
   onSelectView,
   onNewNote,
+  onOpenToday,
   onCreateFolder,
   onRenameFolder,
   onDeleteFolder,
@@ -96,15 +101,18 @@ export function NomaSidebar({
 }: SidebarProps) {
   const auth = useAuth();
   const accountLabel = auth.user ? "Account" : "Sign in";
-  const live = notes.filter((note) => !note.deleted);
+  // Templates are partitioned out of the ordinary counts, mirroring view.ts.
+  const live = notes.filter((note) => !note.deleted && !note.isTemplate);
   const counts = {
     all: live.filter((note) => !note.archived).length,
     recent: live.filter((note) => !note.archived && Date.now() - note.updatedAt < 6.048e8).length,
     pinned: live.filter((note) => note.pinned && !note.archived).length,
     favorites: live.filter((note) => note.favorite && !note.archived).length,
     reminders: live.filter((note) => Boolean(note.reminderAt) && !note.archived).length,
+    daily: live.filter((note) => Boolean(note.dailyDate)).length,
+    templates: notes.filter((note) => note.isTemplate && !note.deleted).length,
     archive: live.filter((note) => note.archived).length,
-    trash: notes.filter((note) => note.deleted).length,
+    trash: notes.filter((note) => note.deleted && !note.isTemplate).length,
   };
 
   return (
@@ -145,6 +153,14 @@ export function NomaSidebar({
           <Plus className="size-4" />
           New Note
         </Button>
+        <Button
+          variant="ghost"
+          className="mt-1.5 h-9 w-full justify-start gap-2 text-muted-foreground hover:text-sidebar-accent-foreground"
+          onClick={onOpenToday}
+        >
+          <CalendarDays className="size-4" />
+          Today
+        </Button>
       </div>
 
       <nav className="noma-scroll flex-1 space-y-6 overflow-y-auto px-3 pb-6">
@@ -183,6 +199,20 @@ export function NomaSidebar({
             count={counts.reminders}
             active={sameView(view, { kind: "reminders" })}
             onClick={() => onSelectView({ kind: "reminders" })}
+          />
+          <NavItem
+            label="Daily notes"
+            icon={NotebookPen}
+            count={counts.daily}
+            active={sameView(view, { kind: "daily" })}
+            onClick={() => onSelectView({ kind: "daily" })}
+          />
+          <NavItem
+            label="Templates"
+            icon={LayoutTemplate}
+            count={counts.templates}
+            active={sameView(view, { kind: "templates" })}
+            onClick={() => onSelectView({ kind: "templates" })}
           />
         </div>
 
