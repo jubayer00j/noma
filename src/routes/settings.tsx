@@ -35,6 +35,7 @@ import { useDatabase } from "@/lib/noma/DatabaseContext";
 import { BackupUnlockDialog } from "@/components/noma/backup-unlock-dialog";
 import { BackupKeyNeededError, getBackupDeviceKey } from "@/lib/noma/backup-crypto";
 import { DriveCard } from "@/components/noma/drive-card";
+import { ImportSection } from "@/components/noma/import-section";
 import { AppLockSection } from "@/components/noma/app-lock-section";
 import { ThemePicker } from "@/components/noma/theme-picker";
 
@@ -291,6 +292,8 @@ function SettingsPage() {
               ))}
             </ul>
           )}
+
+          {db && <ImportSection db={db} ownerId={auth.user?.uid ?? null} />}
         </Section>
 
         <Section
