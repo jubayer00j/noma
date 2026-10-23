@@ -9,6 +9,7 @@ import {
   Check,
   Copy,
   FolderInput,
+  History,
   Image as ImageIcon,
   LayoutTemplate,
   Lock,
@@ -50,6 +51,8 @@ export interface NoteActions {
   setArchived: (note: Note, archived: boolean) => void;
   setReminder?: (note: Note) => void;
   duplicate: (note: Note) => void;
+  /** Opens the per-note version history dialog (hidden for locked notes). */
+  viewHistory?: (note: Note) => void;
   move: (note: Note, folderId: string | null) => void;
   trash: (note: Note) => void;
   restore: (note: Note) => void;
@@ -258,6 +261,11 @@ const NoteItem = memo(function NoteItem({
                   <DropdownMenuItem onClick={() => actions.duplicate(note)}>
                     <Copy className="size-4" /> Duplicate
                   </DropdownMenuItem>
+                  {!locked && actions.viewHistory && (
+                    <DropdownMenuItem onClick={() => actions.viewHistory?.(note)}>
+                      <History className="size-4" /> Version history
+                    </DropdownMenuItem>
+                  )}
                   {note.isTemplate ? (
                     <>
                       {actions.useTemplate && (

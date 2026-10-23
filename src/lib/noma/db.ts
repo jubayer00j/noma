@@ -7,6 +7,7 @@ import {
   type BackupRecord,
   type Folder,
   type Note,
+  type NoteVersion,
   type Reminder,
   type SyncState,
   type SyncTombstone,
@@ -23,6 +24,7 @@ export class NomaDatabase extends Dexie {
   reminders!: Table<Reminder, string>;
   tombstones!: Table<SyncTombstone, string>;
   syncMeta!: Table<SyncState, string>;
+  noteVersions!: Table<NoteVersion, string>;
 
   constructor(databaseName: string) {
     super(databaseName);
@@ -59,6 +61,21 @@ export class NomaDatabase extends Dexie {
       reminders: "id, noteId, scheduledAt, status, createdAt, updatedAt",
       tombstones: "id, entity, deletedAt",
       syncMeta: "id",
+    });
+
+    // v4 — Per-note version history: local-only snapshots of replaced
+    // note states (see versions.ts). Never part of backups or sync.
+    this.version(4).stores({
+      notes: "id, updatedAt, createdAt, folderId, pinned, favorite, archived, deleted, *tagIds",
+      folders: "id, name, parentId",
+      tags: "id, name",
+      attachments: "id, noteId",
+      settings: "id",
+      backups: "id, createdAt",
+      reminders: "id, noteId, scheduledAt, status, createdAt, updatedAt",
+      tombstones: "id, entity, deletedAt",
+      syncMeta: "id",
+      noteVersions: "id, noteId",
     });
   }
 }

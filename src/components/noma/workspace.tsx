@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   Check,
   Hash,
+  History,
   Lock,
   Menu,
   MoreHorizontal,
@@ -35,6 +36,7 @@ import { NoteLockDialog } from "./note-lock-dialog";
 import { NoteLockGate } from "./note-lock-gate";
 import { NoteSessionAttachmentsContext } from "./note-session-context";
 import { ReminderDialog } from "./reminder-dialog";
+import { VersionHistoryDialog } from "./version-history-dialog";
 import { RemindersView } from "./reminders-view";
 import { NomaSidebar } from "./sidebar";
 import { Button } from "@/components/ui/button";
@@ -95,6 +97,7 @@ import {
 } from "@/lib/noma/notes";
 import { highlightTerms, searchNotes } from "@/lib/noma/search";
 import { getOrCreateDailyNote } from "@/lib/noma/daily";
+import { restoreVersion } from "@/lib/noma/versions";
 import {
   createNoteFromTemplate,
   ensureBuiltinTemplates,
@@ -122,6 +125,7 @@ interface NoteOverflowMenuProps {
   onMoveToFolder: (folderId: string | null) => void;
   onSetReminder: () => void;
   onDuplicate: () => void;
+  onVersionHistory?: () => void;
   onToggleArchive: () => void;
   onTrash: () => void;
   onRestore: () => void;
@@ -146,6 +150,7 @@ function NoteOverflowMenu({
   onMoveToFolder,
   onSetReminder,
   onDuplicate,
+  onVersionHistory,
   onToggleArchive,
   onTrash,
   onRestore,
@@ -213,6 +218,11 @@ function NoteOverflowMenu({
               {note.reminderAt ? "Edit Reminder" : "Set Reminder"}
             </DropdownMenuItem>
             <DropdownMenuItem onClick={onDuplicate}>Duplicate</DropdownMenuItem>
+            {!note.lock && onVersionHistory && (
+              <DropdownMenuItem onClick={onVersionHistory}>
+                <History className="size-4" /> Version history
+              </DropdownMenuItem>
+            )}
             {note.isTemplate ? (
               <>
                 {onUseTemplate && (
@@ -587,6 +597,7 @@ export function Workspace() {
   const [prompt, setPrompt] = useState<PromptRequest | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [reminderTargetNote, setReminderTargetNote] = useState<Note | null>(null);
+  const [versionHistoryNote, setVersionHistoryNote] = useState<Note | null>(null);
   /**
    * Unlocked session for the open locked note: its key and decrypted data,
    * held in memory only. Cleared when the note closes, another note opens,
@@ -917,6 +928,7 @@ export function Workspace() {
     prompt: PromptRequest | null;
     confirmation: Confirmation | null;
     reminderTargetNote: Note | null;
+    versionHistoryNote: Note | null;
     activeNoteId: string | null;
     noteMode: "read" | "edit";
   }>({
@@ -924,6 +936,7 @@ export function Workspace() {
     prompt: null,
     confirmation: null,
     reminderTargetNote: null,
+    versionHistoryNote: null,
     activeNoteId: null,
     noteMode: "read",
   });
@@ -932,6 +945,7 @@ export function Workspace() {
     prompt,
     confirmation,
     reminderTargetNote,
+    versionHistoryNote,
     activeNoteId,
     noteMode,
   };
@@ -942,6 +956,10 @@ export function Workspace() {
    */
   const handleSystemBack = useCallback((): boolean => {
     const state = backStateRef.current;
+    if (state.versionHistoryNote) {
+      setVersionHistoryNote(null);
+      return true;
+    }
     if (state.reminderTargetNote) {
       setReminderTargetNote(null);
       return true;
@@ -1001,6 +1019,7 @@ export function Workspace() {
         if (db) void setArchived(db, note, archived);
       },
       setReminder: (note) => setReminderTargetNote(note),
+      viewHistory: (note) => setVersionHistoryNote(note),
       lockNote: (note) => setLockDialog({ note, mode: "setup" }),
       saveAsTemplate: (note) =>
         setPrompt({
@@ -1078,6 +1097,27 @@ export function Workspace() {
         }),
     }),
     [db, openNote, flushPendingSave],
+  );
+
+  /**
+   * Restores a version of the dialog's note. Flushes first: if the note
+   * is open in the editor with edits still waiting on the debounced
+   * autosave, the state restoreVersion force-snapshots (the restore's
+   * undo point) must be the user's actual current text. Afterwards the
+   * draft overlay for the note is dropped so the surfaces resync from
+   * the restored stored text.
+   */
+  const handleRestoreVersion = useCallback(
+    async (versionId: string): Promise<boolean> => {
+      if (!db || !versionHistoryNote) return false;
+      await flushPendingSave();
+      const ok = await restoreVersion(db, versionId);
+      if (ok) {
+        setDraft((current) => (current?.id === versionHistoryNote.id ? null : current));
+      }
+      return ok;
+    },
+    [db, versionHistoryNote, flushPendingSave],
   );
 
   const searchResults = useMemo(
@@ -1198,6 +1238,7 @@ export function Workspace() {
       onMoveToFolder={(folderId) => void moveNote(db!, activeNote.id, folderId)}
       onSetReminder={() => setReminderTargetNote(activeNote)}
       onDuplicate={() => actions.duplicate(activeNote)}
+      onVersionHistory={() => setVersionHistoryNote(activeNote)}
       onLockNote={() => setLockDialog({ note: activeNote, mode: "setup" })}
       onManageLock={() => setLockDialog({ note: activeNote, mode: "manage" })}
       onSaveAsTemplate={() => actions.saveAsTemplate?.(activeNote)}
@@ -1540,6 +1581,14 @@ export function Workspace() {
             await deleteNoteReminder(db!, reminderTargetNote.id);
             toast.success("Reminder removed");
           }}
+        />
+      )}
+
+      {versionHistoryNote && (
+        <VersionHistoryDialog
+          note={versionHistoryNote}
+          onClose={() => setVersionHistoryNote(null)}
+          onRestore={handleRestoreVersion}
         />
       )}
 

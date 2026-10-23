@@ -68,6 +68,20 @@ export interface Note {
   dailyDefault?: boolean;
 }
 
+/**
+ * One earlier state of a note's title + content, kept by the version
+ * history (see versions.ts). `createdAt` is the replaced state's own
+ * `updatedAt` — when that text was current. Versions are local to the
+ * device: they are not part of the backup payload and never sync.
+ */
+export interface NoteVersion {
+  id: string;
+  noteId: string;
+  title: string;
+  content: string;
+  createdAt: number;
+}
+
 export interface Folder {
   id: string;
   name: string;
