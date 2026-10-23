@@ -32,6 +32,8 @@ import {
   type BackupPayload,
 } from "@/lib/noma/backup";
 import { useDatabase } from "@/lib/noma/DatabaseContext";
+import { BackupUnlockDialog } from "@/components/noma/backup-unlock-dialog";
+import { BackupKeyNeededError, getBackupDeviceKey } from "@/lib/noma/backup-crypto";
 import { DriveCard } from "@/components/noma/drive-card";
 import { AppLockSection } from "@/components/noma/app-lock-section";
 import { ThemePicker } from "@/components/noma/theme-picker";
@@ -81,6 +83,12 @@ function SettingsPage() {
   const fileInput = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [pendingImport, setPendingImport] = useState<BackupPayload | null>(null);
+  const [unlockOpen, setUnlockOpen] = useState(false);
+  const unlockRetryRef = useRef<(() => void) | null>(null);
+  const openUnlock = (retry: () => void) => {
+    unlockRetryRef.current = retry;
+    setUnlockOpen(true);
+  };
   const [confirmSignOut, setConfirmSignOut] = useState(false);
 
   const backups = useLiveQuery(
@@ -114,6 +122,12 @@ function SettingsPage() {
         toast.success("Backup downloaded");
       }
     } catch (error) {
+      if (error instanceof BackupKeyNeededError) {
+        // Encryption is on but this device holds no key: unlock, then
+        // retry the export (which seals the archive).
+        openUnlock(() => void handleExport());
+        return;
+      }
       toast.error(error instanceof Error ? error.message : "Export failed");
     } finally {
       setBusy(null);
@@ -123,8 +137,16 @@ function SettingsPage() {
   async function handleFile(file: File) {
     setBusy("import");
     try {
-      setPendingImport(await readBackupZip(file, auth.user?.uid ?? null));
+      setPendingImport(
+        await readBackupZip(file, auth.user?.uid ?? null, getBackupDeviceKey(auth.user?.uid ?? null)),
+      );
     } catch (error) {
+      if (error instanceof BackupKeyNeededError) {
+        // Encrypted backup file, no key on this device: unlock, then
+        // retry reading the same file.
+        openUnlock(() => void handleFile(file));
+        return;
+      }
       toast.error(error instanceof Error ? error.message : "That file isn't a Noma backup.");
     } finally {
       setBusy(null);
@@ -380,6 +402,17 @@ function SettingsPage() {
           )}
         </Section>
       </div>
+
+      <BackupUnlockDialog
+        open={unlockOpen}
+        onOpenChange={setUnlockOpen}
+        ownerId={auth.user?.uid ?? null}
+        onUnlocked={() => {
+          const retry = unlockRetryRef.current;
+          unlockRetryRef.current = null;
+          retry?.();
+        }}
+      />
 
       <AlertDialog open={confirmSignOut} onOpenChange={setConfirmSignOut}>
         <AlertDialogContent>

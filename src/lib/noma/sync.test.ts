@@ -594,6 +594,8 @@ interface FakeRemote {
   checksum: string | null;
   downloads: number;
   uploads: number;
+  /** Encryption header the fake archive carries (null = plaintext). */
+  encryption?: import("./backup-crypto").BackupEncryptionHeader | null;
 }
 
 function makeRemote(): FakeRemote {
@@ -630,6 +632,7 @@ function makeDeps(remote: FakeRemote): SyncDriveDeps {
           md5Checksum: remote.checksum,
           size: null,
         },
+        encryption: remote.encryption ?? null,
       };
     },
     backupNow: async (dbArg: NomaDatabase) => {

@@ -1,5 +1,13 @@
 import { Capacitor } from "@capacitor/core";
 import { applyBackup, type BackupPayload, type MergeCounts } from "./backup";
+import {
+  BackupKeyNeededError,
+  BackupUnlockError,
+  adoptBackupEncryptionHeader,
+  clearBackupEncryptionRecord,
+  getBackupEncryptionRecord,
+  type BackupEncryptionHeader,
+} from "./backup-crypto";
 import { getSettings, newId, type NomaDatabase } from "./db";
 import {
   backupNow,
@@ -498,7 +506,7 @@ export type SyncReason =
   "start" | "foreground" | "reconnect" | "tick" | "edit" | "manual" | "scheduled" | "stage";
 
 export interface SyncResult {
-  status: "synced" | "skipped" | "failed";
+  status: "synced" | "skipped" | "failed" | "locked";
   reason?: string;
   pulled?: boolean;
   pushed?: boolean;
@@ -590,18 +598,42 @@ async function runSyncCycle(
 
     let remotePayload: BackupPayload | null = null;
     let remoteMeta: CanonicalFileMeta | null = meta;
+    let remoteEncryption: BackupEncryptionHeader | null = null;
     if (meta && !remoteUnchanged) {
       const fetched = await deps.fetchCanonicalBackup(ownerId);
       if (fetched) {
         remotePayload = fetched.payload;
         remoteMeta = fetched.meta;
+        remoteEncryption = fetched.encryption;
       }
     }
 
     return finish(
-      await mergeAndMaybePush(db, ownerId, deps, state, remotePayload, remoteMeta, options, false),
+      await mergeAndMaybePush(
+        db,
+        ownerId,
+        deps,
+        state,
+        remotePayload,
+        remoteMeta,
+        remoteEncryption,
+        options,
+        false,
+      ),
     );
   } catch (error) {
+    // Encrypted remote + no usable key on this device is a calm paused
+    // state, not a failure: no merge happened and no state was written.
+    // The user unlocks with the passphrase and sync resumes.
+    if (error instanceof BackupKeyNeededError || error instanceof BackupUnlockError) {
+      return finish({
+        status: "locked",
+        reason:
+          error instanceof BackupUnlockError
+            ? "The remote backup is encrypted and this device's key doesn't open it. Enter your backup passphrase to resume sync."
+            : "Sync is paused — enter your backup passphrase to resume.",
+      });
+    }
     return finish({
       status: "failed",
       reason: error instanceof Error ? error.message : "Sync failed.",
@@ -616,6 +648,7 @@ async function mergeAndMaybePush(
   state: SyncState,
   remotePayload: BackupPayload | null,
   remoteMeta: CanonicalFileMeta | null,
+  remoteEncryption: BackupEncryptionHeader | null,
   options: SyncOptions,
   retried: boolean,
 ): Promise<SyncResult> {
@@ -626,6 +659,17 @@ async function mergeAndMaybePush(
 
   if (remotePayload) {
     pulled = true;
+    // Fleet encryption adoption (spec D6): the pulled archive is the
+    // source of truth for encryption state. An encrypted archive's wrap
+    // parameters replace the local ones — a held device key keeps
+    // working, because a passphrase change never changes the master key.
+    // A plaintext archive while a local record exists means another
+    // device turned encryption off, so the local record clears too.
+    if (remoteEncryption) {
+      adoptBackupEncryptionHeader(ownerId, remoteEncryption);
+    } else if (getBackupEncryptionRecord(ownerId)) {
+      clearBackupEncryptionRecord(ownerId);
+    }
     effectiveRemoteSignature = librarySyncSignature({
       notes: remotePayload.notes,
       folders: remotePayload.folders,
@@ -700,6 +744,7 @@ async function mergeAndMaybePush(
           base,
           fetched.payload,
           fetched.meta,
+          fetched.encryption,
           options,
           true,
         );

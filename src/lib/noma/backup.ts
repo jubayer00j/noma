@@ -1,4 +1,12 @@
 import JSZip from "jszip";
+import {
+  BackupKeyNeededError,
+  getBackupDeviceKey,
+  getBackupEncryptionRecord,
+  openArchive,
+  sealArchive,
+  type BackupEncryptionHeader,
+} from "./backup-crypto";
 import { type NomaDatabase, newId } from "./db";
 import { cleanupOrphanedReminders } from "./notes";
 import { cleanupOrphanedAttachments } from "./media";
@@ -25,6 +33,17 @@ export interface ExportOptions {
   includeTags?: boolean;
   includeSettings?: boolean;
   includeReminders?: boolean;
+  /**
+   * Archive encryption for the built ZIP:
+   * - an object seals the archive with that header + key;
+   * - `null` forces a plaintext archive;
+   * - `undefined` (the default) resolves the account's stored encryption
+   *   record: when one exists the archive is sealed with this device's
+   *   key, and when the record exists but no key is held a
+   *   BackupKeyNeededError is thrown — an enabled archive is NEVER
+   *   silently written in plaintext.
+   */
+  encryption?: { header: BackupEncryptionHeader; keyBytes: Uint8Array } | null;
 }
 
 export interface BackupPayload {
@@ -188,8 +207,41 @@ export async function buildBackupZip(
     }
   }
 
-  const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
+  let blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
+
+  // Whole-archive encryption (see backup-crypto.ts): the ZIP payload is
+  // unchanged (format stays v2); only the stored bytes are sealed.
+  const encryption =
+    options.encryption !== undefined
+      ? options.encryption
+      : resolveStoredEncryption(ownerId);
+  if (encryption) {
+    const zipBytes = new Uint8Array(await blob.arrayBuffer());
+    const sealed = await sealArchive(zipBytes, encryption.header, encryption.keyBytes);
+    blob = new Blob([sealed as BlobPart], { type: "application/zip" });
+  }
   return { blob, payload };
+}
+
+/**
+ * The default encryption resolution for a build: the account's stored
+ * record, when one exists. Throws BackupKeyNeededError when encryption
+ * is enabled but this device doesn't hold the key — callers surface an
+ * unlock prompt; the archive is never downgraded to plaintext instead.
+ */
+function resolveStoredEncryption(
+  ownerId: string | null,
+): { header: BackupEncryptionHeader; keyBytes: Uint8Array } | null {
+  const record = getBackupEncryptionRecord(ownerId);
+  if (!record) return null;
+  const keyBytes = getBackupDeviceKey(ownerId);
+  if (!keyBytes) {
+    throw new BackupKeyNeededError(
+      "Backup encryption is on, but this device doesn't hold the key. Enter your backup passphrase to continue.",
+      record,
+    );
+  }
+  return { header: record, keyBytes };
 }
 
 export function downloadBlob(blob: Blob, fileName: string): void {
@@ -220,10 +272,48 @@ async function readJson<T>(zip: JSZip, path: string): Promise<T | null> {
 export async function readBackupZip(
   file: Blob,
   ownerId: string | null = null,
+  keyBytes?: Uint8Array | null,
+): Promise<BackupPayload> {
+  return (await readBackupArchive(file, ownerId, keyBytes)).payload;
+}
+
+/**
+ * Reads a backup archive (plaintext ZIP or sealed envelope) and also
+ * reports the encryption header it carried, so sync can adopt the
+ * fleet's wrap parameters after a successful pull. Encrypted archives
+ * require `keyBytes`: BackupKeyNeededError without one,
+ * BackupUnlockError when it doesn't fit. Legacy plaintext archives are
+ * always readable.
+ */
+async function archiveToBytes(file: Blob): Promise<Uint8Array> {
+  // Production callers pass real Blobs/Files; the extra branches keep the
+  // reader usable with raw buffers (tests, non-DOM callers).
+  if (file instanceof Uint8Array) return file;
+  if (file instanceof ArrayBuffer) return new Uint8Array(file);
+  if (typeof file.arrayBuffer === "function") {
+    return new Uint8Array(await file.arrayBuffer());
+  }
+  return new Uint8Array(await new Response(file).arrayBuffer());
+}
+
+export async function readBackupArchive(
+  file: Blob,
+  ownerId: string | null = null,
+  keyBytes?: Uint8Array | null,
+): Promise<{ payload: BackupPayload; encryption: BackupEncryptionHeader | null }> {
+  const bytes = await archiveToBytes(file);
+  const { zipBytes, header } = await openArchive(bytes, keyBytes);
+  const payload = await readBackupZipBytes(zipBytes, ownerId);
+  return { payload, encryption: header };
+}
+
+async function readBackupZipBytes(
+  bytes: Uint8Array,
+  ownerId: string | null,
 ): Promise<BackupPayload> {
   let zip: JSZip;
   try {
-    zip = await JSZip.loadAsync(file);
+    zip = await JSZip.loadAsync(bytes as unknown as ArrayBuffer);
   } catch {
     throw new BackupError("That file isn't a readable ZIP archive.");
   }

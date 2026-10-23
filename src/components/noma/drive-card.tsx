@@ -8,7 +8,7 @@ import {
   RefreshCw,
   ShieldCheck,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -32,6 +32,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { applyBackup, type BackupPayload, recordBackup } from "@/lib/noma/backup";
+import { BackupKeyNeededError } from "@/lib/noma/backup-crypto";
+import { BackupEncryptionSection } from "@/components/noma/backup-encryption-section";
+import { BackupUnlockDialog } from "@/components/noma/backup-unlock-dialog";
 import { resetNativeBackupState } from "@/lib/noma/background-backup";
 import {
   BACKUP_INTERVAL_PRESETS,
@@ -143,10 +146,21 @@ export function DriveCard({
   }, [auth.user?.uid]);
 
   const [justConnected, setJustConnected] = useState(false);
-  const [syncInfo, setSyncInfo] = useState<{ lastSyncAt: number | null; failed: boolean }>({
+  const [syncInfo, setSyncInfo] = useState<{
+    lastSyncAt: number | null;
+    failed: boolean;
+    locked: boolean;
+  }>({
     lastSyncAt: null,
     failed: false,
+    locked: false,
   });
+  const [unlockOpen, setUnlockOpen] = useState(false);
+  const unlockRetryRef = useRef<(() => void) | null>(null);
+  const openUnlock = useCallback((retry?: () => void) => {
+    unlockRetryRef.current = retry ?? null;
+    setUnlockOpen(true);
+  }, []);
   const [syncing, setSyncing] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
@@ -177,12 +191,13 @@ export function DriveCard({
   }, [auth.user?.uid]);
 
   const refreshSyncInfo = useCallback(
-    async (failed?: boolean) => {
+    async (failed?: boolean, locked?: boolean) => {
       if (!db) return;
       const state = await getSyncState(db);
       setSyncInfo((prev) => ({
         lastSyncAt: state.lastSyncAt,
         failed: failed ?? prev.failed,
+        locked: locked ?? prev.locked,
       }));
     },
     [db],
@@ -195,7 +210,14 @@ export function DriveCard({
   useEffect(() => {
     const onSyncCompleted = (event: Event) => {
       const detail = (event as CustomEvent<{ status?: string }>).detail;
-      void refreshSyncInfo(detail?.status === "failed");
+      void refreshSyncInfo(
+        detail?.status === "failed",
+        detail?.status === "locked"
+          ? true
+          : detail?.status === "synced"
+            ? false
+            : undefined,
+      );
     };
     window.addEventListener("noma:sync-completed", onSyncCompleted);
     return () => window.removeEventListener("noma:sync-completed", onSyncCompleted);
@@ -208,6 +230,9 @@ export function DriveCard({
       const result = await syncNow(db, auth.user?.uid ?? null, "manual");
       if (result.status === "failed") {
         toast.error(result.reason ?? "Sync failed — will retry.");
+      } else if (result.status === "locked") {
+        toast.message(result.reason ?? "Sync is paused — enter your backup passphrase to resume.");
+        openUnlock(() => void runSyncRef.current());
       } else if (result.status === "skipped") {
         toast.message(result.reason ?? "Sync skipped.");
       } else {
@@ -231,7 +256,12 @@ export function DriveCard({
     } finally {
       setSyncing(false);
     }
-  }, [db, auth.user?.uid, refreshSyncInfo]);
+  }, [db, auth.user?.uid, refreshSyncInfo, openUnlock]);
+
+  const runSyncRef = useRef(runSync);
+  useEffect(() => {
+    runSyncRef.current = runSync;
+  }, [runSync]);
 
   const handleFailure = useCallback((error: unknown, label: string) => {
     const message = error instanceof Error ? error.message : label;
@@ -255,11 +285,23 @@ export function DriveCard({
           detail: `${manifest.noteCount} note${manifest.noteCount === 1 ? "" : "s"} backed up just now.`,
         });
       } catch (error) {
+        if (error instanceof BackupKeyNeededError) {
+          // Encryption is on but this device holds no key: prompt for
+          // the passphrase, then retry the backup once unlocked.
+          setStatus({ kind: "idle" });
+          openUnlock(() => void runBackupRef.current(silent));
+          return;
+        }
         handleFailure(error, "Backup couldn't be completed.");
       }
     },
-    [handleFailure, db, auth.user?.uid],
+    [handleFailure, db, auth.user?.uid, openUnlock],
   );
+
+  const runBackupRef = useRef(runBackup);
+  useEffect(() => {
+    runBackupRef.current = runBackup;
+  }, [runBackup]);
 
   async function handleConnect() {
     setConnecting(true);
@@ -302,6 +344,12 @@ export function DriveCard({
       const payload = await fetchDriveBackup(file.id, auth.user?.uid ?? null);
       setPreview({ file, payload });
     } catch (error) {
+      if (error instanceof BackupKeyNeededError) {
+        // Encrypted archive, no key on this device: unlock, then retry
+        // reading the same file.
+        openUnlock(() => void loadPreview(file));
+        return;
+      }
       handleFailure(error, "That backup couldn't be read.");
       toast.error(error instanceof Error ? error.message : "That backup couldn't be read.");
     } finally {
@@ -398,6 +446,8 @@ export function DriveCard({
         <p className="mt-1 text-sm text-muted-foreground" aria-live="polite">
           {syncing ? (
             "Syncing…"
+          ) : syncInfo.locked ? (
+            <span>Sync is paused — enter your backup passphrase to resume</span>
           ) : syncInfo.failed ? (
             <span className="text-destructive">Sync failed — will retry</span>
           ) : syncInfo.lastSyncAt ? (
@@ -662,6 +712,15 @@ export function DriveCard({
         </div>
       )}
 
+      <BackupEncryptionSection
+        ownerId={auth.user?.uid ?? null}
+        onEncryptionEnabled={() => {
+          // Seal the current Drive backup right away so the canonical
+          // archive becomes the encrypted source of truth immediately.
+          if (getConnection(auth.user?.uid ?? null)) void runBackupRef.current(true);
+        }}
+      />
+
       <p className="mt-4 text-xs text-muted-foreground">
         Your notes are stored locally on this device. Google Drive is optional — when connected,
         Noma syncs and backs up your data to your own Google Drive, and Noma never stores it
@@ -824,6 +883,17 @@ export function DriveCard({
         </AlertDialogContent>
       </AlertDialog>
 
+      <BackupUnlockDialog
+        open={unlockOpen}
+        onOpenChange={setUnlockOpen}
+        ownerId={auth.user?.uid ?? null}
+        onUnlocked={() => {
+          const retry = unlockRetryRef.current;
+          unlockRetryRef.current = null;
+          retry?.();
+        }}
+      />
+
       <AlertDialog open={confirmDisconnect} onOpenChange={setConfirmDisconnect}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -838,6 +908,9 @@ export function DriveCard({
             <AlertDialogAction
               onClick={async () => {
                 await disconnectDrive(auth.user?.uid ?? null);
+                // disconnectDrive also cleared the backup-encryption
+                // record; let the encryption section refresh its state.
+                window.dispatchEvent(new Event("noma:encryption-changed"));
                 // The background worker must never upload to a disconnected
                 // account: wipe its staged archive and deactivate it.
                 await resetNativeBackupState();
