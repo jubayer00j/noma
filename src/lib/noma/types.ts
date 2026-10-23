@@ -56,6 +56,16 @@ export interface Note {
   wordCount: number;
   /** Per-note encryption lock; absent/null means the note is not locked. */
   lock?: NoteLock | null;
+  /** Local calendar day (`YYYY-MM-DD`) this note journals; null/absent for
+   * ordinary notes. Built from local date components, never UTC. */
+  dailyDate?: string | null;
+  /** True when this note is a template: excluded from normal views and
+   * search, listed only in the Templates view. Templates ride the note
+   * record, so backup and sync carry them like any other note. */
+  isTemplate?: boolean;
+  /** On a template: its content seeds each new daily note. At most one
+   * template carries this at a time. */
+  dailyDefault?: boolean;
 }
 
 export interface Folder {

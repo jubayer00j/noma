@@ -143,6 +143,9 @@ export function entityContentHash(entity: SyncEntity, item: AnyEntity): string {
           n.deleted ? 1 : 0,
           n.deletedAt ?? "",
           n.reminderAt ?? "",
+          n.dailyDate ?? "",
+          n.isTemplate ? 1 : 0,
+          n.dailyDefault ? 1 : 0,
           n.lock
             ? JSON.stringify({
                 v: n.lock.v,

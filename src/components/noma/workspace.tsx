@@ -92,6 +92,13 @@ import {
   cleanupOrphanedReminders,
 } from "@/lib/noma/notes";
 import { highlightTerms, searchNotes } from "@/lib/noma/search";
+import { getOrCreateDailyNote } from "@/lib/noma/daily";
+import {
+  createNoteFromTemplate,
+  ensureBuiltinTemplates,
+  saveAsTemplate,
+  setDailyDefault,
+} from "@/lib/noma/templates";
 import { saveLockedNoteContent, type UnlockedNoteData } from "@/lib/noma/note-lock";
 import type { Folder, Note, Reminder, Tag } from "@/lib/noma/types";
 import { filterNotes, viewTitle, type ViewState } from "@/lib/noma/view";
@@ -119,6 +126,9 @@ interface NoteOverflowMenuProps {
   onDeleteForever: () => void;
   onLockNote: () => void;
   onManageLock: () => void;
+  onSaveAsTemplate?: () => void;
+  onUseTemplate?: () => void;
+  onToggleDailyDefault?: () => void;
 }
 
 /**
@@ -140,6 +150,9 @@ function NoteOverflowMenu({
   onDeleteForever,
   onLockNote,
   onManageLock,
+  onSaveAsTemplate,
+  onUseTemplate,
+  onToggleDailyDefault,
 }: NoteOverflowMenuProps) {
   return (
     <DropdownMenu>
@@ -198,15 +211,33 @@ function NoteOverflowMenu({
               {note.reminderAt ? "Edit Reminder" : "Set Reminder"}
             </DropdownMenuItem>
             <DropdownMenuItem onClick={onDuplicate}>Duplicate</DropdownMenuItem>
-            {note.lock ? (
-              <DropdownMenuItem onClick={onManageLock}>
-                <Lock className="size-4" /> Manage note lock
-              </DropdownMenuItem>
+            {note.isTemplate ? (
+              <>
+                {onUseTemplate && (
+                  <DropdownMenuItem onClick={onUseTemplate}>Use template</DropdownMenuItem>
+                )}
+                {onToggleDailyDefault && (
+                  <DropdownMenuItem onClick={onToggleDailyDefault}>
+                    {note.dailyDefault && <Check className="size-4" />} Use as daily template
+                  </DropdownMenuItem>
+                )}
+              </>
             ) : (
-              <DropdownMenuItem onClick={onLockNote}>
-                <Lock className="size-4" /> Lock note
-              </DropdownMenuItem>
+              !note.lock &&
+              onSaveAsTemplate && (
+                <DropdownMenuItem onClick={onSaveAsTemplate}>Save as template</DropdownMenuItem>
+              )
             )}
+            {!note.isTemplate &&
+              (note.lock ? (
+                <DropdownMenuItem onClick={onManageLock}>
+                  <Lock className="size-4" /> Manage note lock
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem onClick={onLockNote}>
+                  <Lock className="size-4" /> Lock note
+                </DropdownMenuItem>
+              ))}
             <DropdownMenuItem onClick={onToggleArchive}>
               {note.archived ? "Unarchive" : "Archive"}
             </DropdownMenuItem>
@@ -329,6 +360,11 @@ export function WorkspaceSurfaces({
     <>
       {activeNote ? (
         <div className="noma-scroll flex-1 overflow-y-auto" data-testid="note-surface">
+          {activeNote.isTemplate && (
+            <div className="border-b border-border bg-accent/50 px-4 py-2 text-center text-xs text-muted-foreground">
+              Template — changes here apply to future notes created from it.
+            </div>
+          )}
           {gateClosed ? (
             <NoteLockGate key={activeNote.id} note={activeNote} onUnlocked={onUnlockNote} />
           ) : (
@@ -383,15 +419,26 @@ export function WorkspaceSurfaces({
               ))}
             </div>
           ) : (
-            <NoteList
-              notes={visibleNotes}
-              folders={allFolders}
-              tags={allTags}
-              view={view}
-              activeNoteId={activeNoteId}
-              actions={actions}
-              phoneAlarmNoteIds={phoneAlarmNoteIds}
-            />
+            <>
+              {view.kind === "templates" && (
+                <div className="mx-auto w-full max-w-3xl px-4 pt-4 sm:px-6">
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    Templates are starting points for new notes — open one or use it from its
+                    menu. <code className="rounded bg-secondary px-1 py-0.5">{"{{date}}"}</code>{" "}
+                    in a template becomes today's date when you use it.
+                  </p>
+                </div>
+              )}
+              <NoteList
+                notes={visibleNotes}
+                folders={allFolders}
+                tags={allTags}
+                view={view}
+                activeNoteId={activeNoteId}
+                actions={actions}
+                phoneAlarmNoteIds={phoneAlarmNoteIds}
+              />
+            </>
           )}
         </div>
       </NotesListSurfaceContext.Provider>
@@ -525,6 +572,11 @@ export function Workspace() {
       void cleanupOrphanedReminders(db);
     }
   }, [db]);
+
+  // Built-in templates seed lazily the first time the Templates view opens.
+  useEffect(() => {
+    if (db && view.kind === "templates") void ensureBuiltinTemplates(db);
+  }, [db, view.kind]);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
    * Accumulates unsaved patches so back-navigation can flush them immediately
@@ -712,6 +764,31 @@ export function Workspace() {
     setEditReturnTo("list");
   }, [view, db]);
 
+  /** Opens today's daily note (creating or restoring it if needed)
+   * straight in the editor — the sidebar's Today action. */
+  const openTodayNote = useCallback(async () => {
+    if (!db) return;
+    const note = await getOrCreateDailyNote(db);
+    setMobileNavOpen(false);
+    setDraft(null);
+    setSaveState("idle");
+    setActiveNoteId(note.id);
+    setNoteMode("edit");
+    setEditReturnTo("list");
+  }, [db]);
+
+  /** Blank template note, opened in the editor from the Templates view. */
+  const handleNewTemplate = useCallback(async () => {
+    if (!db) return;
+    const note = await createNote(db, { isTemplate: true });
+    setMobileNavOpen(false);
+    setDraft(null);
+    setSaveState("idle");
+    setActiveNoteId(note.id);
+    setNoteMode("edit");
+    setEditReturnTo("list");
+  }, [db]);
+
   /**
    * Turns a consumed share capture into a real note: body text first, then
    * each shared image saved through the normal attachment pipeline and
@@ -883,6 +960,38 @@ export function Workspace() {
       },
       setReminder: (note) => setReminderTargetNote(note),
       lockNote: (note) => setLockDialog({ note, mode: "setup" }),
+      saveAsTemplate: (note) =>
+        setPrompt({
+          title: "Save as template",
+          description: "The note stays as it is; a copy becomes the template.",
+          initialValue: noteTitle(note),
+          confirmLabel: "Save template",
+          onConfirm: async (name) => {
+            if (!db) return;
+            const template = await saveAsTemplate(db, note.id, name);
+            if (template) toast.success("Template saved");
+            else toast.error("That note can't be saved as a template.");
+          },
+        }),
+      useTemplate: async (note) => {
+        if (!db) return;
+        // The template may be the note open in the editor, whose latest
+        // edits can still be waiting on the debounced autosave.
+        // createNoteFromTemplate reads the persisted record, so flush
+        // first — the new note is minted from the current text.
+        await flushPendingSave();
+        const created = await createNoteFromTemplate(db, note.id);
+        if (!created) return;
+        setMobileNavOpen(false);
+        setDraft(null);
+        setSaveState("idle");
+        setActiveNoteId(created.id);
+        setNoteMode("edit");
+        setEditReturnTo("list");
+      },
+      toggleDailyDefault: (note) => {
+        if (db) void setDailyDefault(db, note.dailyDefault ? null : note.id);
+      },
       duplicate: async (note) => {
         if (!db) return;
         if (note.lock) {
@@ -926,7 +1035,7 @@ export function Workspace() {
           },
         }),
     }),
-    [db, openNote],
+    [db, openNote, flushPendingSave],
   );
 
   const searchResults = useMemo(
@@ -958,6 +1067,7 @@ export function Workspace() {
         void closeNote();
       }}
       onNewNote={handleNewNote}
+      onOpenToday={openTodayNote}
       onCreateFolder={() =>
         setPrompt({
           title: "New folder",
@@ -1048,6 +1158,9 @@ export function Workspace() {
       onDuplicate={() => actions.duplicate(activeNote)}
       onLockNote={() => setLockDialog({ note: activeNote, mode: "setup" })}
       onManageLock={() => setLockDialog({ note: activeNote, mode: "manage" })}
+      onSaveAsTemplate={() => actions.saveAsTemplate?.(activeNote)}
+      onUseTemplate={() => actions.useTemplate?.(activeNote)}
+      onToggleDailyDefault={() => actions.toggleDailyDefault?.(activeNote)}
       onToggleArchive={() => actions.setArchived(activeNote, !activeNote.archived)}
       onTrash={() => actions.trash(activeNote)}
       onRestore={() => actions.restore(activeNote)}
@@ -1254,10 +1367,17 @@ export function Workspace() {
                     Empty Trash
                   </Button>
                 )}
-                <Button size="sm" className="gap-1.5" onClick={handleNewNote}>
-                  <Plus className="size-4" />
-                  <span className="hidden sm:inline">New Note</span>
-                </Button>
+                {view.kind === "templates" ? (
+                  <Button size="sm" className="gap-1.5" onClick={handleNewTemplate}>
+                    <Plus className="size-4" />
+                    <span className="hidden sm:inline">New template</span>
+                  </Button>
+                ) : (
+                  <Button size="sm" className="gap-1.5" onClick={handleNewNote}>
+                    <Plus className="size-4" />
+                    <span className="hidden sm:inline">New Note</span>
+                  </Button>
+                )}
               </div>
             </>
           )}
