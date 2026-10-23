@@ -3,8 +3,22 @@ import * as AlertDialogPrimitive from "@radix-ui/react-alert-dialog";
 
 import { cn } from "@/lib/utils";
 import { buttonVariants } from "@/components/ui/button";
+import { useRegisteredOverlayRoot } from "@/lib/noma/overlay-registry";
 
-const AlertDialog = AlertDialogPrimitive.Root;
+/**
+ * Root wrapper: registers the alert dialog in the overlay registry
+ * while open so the system-back coordinator can dismiss it (see
+ * overlay-registry.ts). Consumer props and behaviour are unchanged.
+ */
+const AlertDialog = ({
+  open,
+  defaultOpen,
+  onOpenChange,
+  ...props
+}: React.ComponentProps<typeof AlertDialogPrimitive.Root>) => {
+  const root = useRegisteredOverlayRoot({ open, defaultOpen, onOpenChange });
+  return <AlertDialogPrimitive.Root {...props} open={root.open} onOpenChange={root.onOpenChange} />;
+};
 
 const AlertDialogTrigger = AlertDialogPrimitive.Trigger;
 

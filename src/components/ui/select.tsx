@@ -5,8 +5,22 @@ import * as SelectPrimitive from "@radix-ui/react-select";
 import { Check, ChevronDown, ChevronUp } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useRegisteredOverlayRoot } from "@/lib/noma/overlay-registry";
 
-const Select = SelectPrimitive.Root;
+/**
+ * Root wrapper: registers the select in the overlay registry while
+ * open so the system-back coordinator can dismiss it (see
+ * overlay-registry.ts). Consumer props and behaviour are unchanged.
+ */
+const Select = ({
+  open,
+  defaultOpen,
+  onOpenChange,
+  ...props
+}: React.ComponentProps<typeof SelectPrimitive.Root>) => {
+  const root = useRegisteredOverlayRoot({ open, defaultOpen, onOpenChange });
+  return <SelectPrimitive.Root {...props} open={root.open} onOpenChange={root.onOpenChange} />;
+};
 
 const SelectGroup = SelectPrimitive.Group;
 

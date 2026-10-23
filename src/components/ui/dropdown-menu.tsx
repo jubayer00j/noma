@@ -5,8 +5,25 @@ import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import { Check, ChevronRight, Circle } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useRegisteredOverlayRoot } from "@/lib/noma/overlay-registry";
 
-const DropdownMenu = DropdownMenuPrimitive.Root;
+/**
+ * Root wrapper: registers the menu in the overlay registry while
+ * open so the system-back coordinator can dismiss it (see
+ * overlay-registry.ts). Menus are normally uncontrolled; the wrapper
+ * tracks open state without changing consumer behaviour.
+ */
+const DropdownMenu = ({
+  open,
+  defaultOpen,
+  onOpenChange,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) => {
+  const root = useRegisteredOverlayRoot({ open, defaultOpen, onOpenChange });
+  return (
+    <DropdownMenuPrimitive.Root {...props} open={root.open} onOpenChange={root.onOpenChange} />
+  );
+};
 
 const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
 

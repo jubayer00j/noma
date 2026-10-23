@@ -19,8 +19,6 @@ import {
   WifiOff,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
-import { App as CapacitorApp } from "@capacitor/app";
 import { toast } from "sonner";
 import { format } from "date-fns";
 import { Bell } from "lucide-react";
@@ -71,6 +69,7 @@ import { AiDialog, type AiDialogMode } from "./ai-dialog";
 import { AI_SETTINGS_CHANGED_EVENT } from "./ai-section";
 import { useAppLock } from "@/lib/noma/AppLockContext";
 import { usePendingShortcut } from "@/lib/noma/shortcut";
+import { registerWorkspaceBackHandler, resolveWorkspaceBackStep } from "@/lib/noma/system-back";
 import { usePendingCapture, type CaptureRequest } from "@/lib/noma/capture";
 import { initShareTarget } from "@/lib/noma/share-target";
 import { saveImageAttachment } from "@/lib/noma/media";
@@ -355,8 +354,7 @@ export function WorkspaceSurfaces({
   lineHeight,
 }: WorkspaceSurfacesProps) {
   const noteOpen = activeNote != null;
-  const sessionForActive =
-    activeNote && noteSession?.noteId === activeNote.id ? noteSession : null;
+  const sessionForActive = activeNote && noteSession?.noteId === activeNote.id ? noteSession : null;
   /** A locked note without a live session shows the unlock gate, never content. */
   const gateClosed = Boolean(activeNote?.lock) && !sessionForActive;
   // The list surface doubles as the virtualized list's scroll element, so
@@ -433,9 +431,7 @@ export function WorkspaceSurfaces({
           {gateClosed ? (
             <NoteLockGate key={activeNote.id} note={activeNote} onUnlocked={onUnlockNote} />
           ) : (
-            <NoteSessionAttachmentsContext.Provider
-              value={sessionForActive?.attachments ?? null}
-            >
+            <NoteSessionAttachmentsContext.Provider value={sessionForActive?.attachments ?? null}>
               {noteMode === "read" ? (
                 <NoteReadView
                   key={activeNote.id}
@@ -499,9 +495,9 @@ export function WorkspaceSurfaces({
               {view.kind === "templates" && (
                 <div className="mx-auto w-full max-w-3xl px-4 pt-4 sm:px-6">
                   <p className="text-xs leading-relaxed text-muted-foreground">
-                    Templates are starting points for new notes — open one or use it from its
-                    menu. <code className="rounded bg-secondary px-1 py-0.5">{"{{date}}"}</code>{" "}
-                    in a template becomes today's date when you use it.
+                    Templates are starting points for new notes — open one or use it from its menu.{" "}
+                    <code className="rounded bg-secondary px-1 py-0.5">{"{{date}}"}</code> in a
+                    template becomes today's date when you use it.
                   </p>
                 </div>
               )}
@@ -530,7 +526,11 @@ export function WorkspaceSurfaces({
  */
 function WorkspaceShellSkeleton() {
   return (
-    <div className="flex h-dvh overflow-hidden bg-background" aria-busy="true" aria-label="Loading workspace">
+    <div
+      className="flex h-dvh overflow-hidden bg-background"
+      aria-busy="true"
+      aria-label="Loading workspace"
+    >
       <aside className="hidden w-64 shrink-0 border-r border-sidebar-border bg-sidebar md:block">
         <div className="space-y-3 px-4 pt-5">
           <div className="flex items-center gap-2.5">
@@ -697,8 +697,7 @@ export function Workspace() {
 
   const visibleNotes = useMemo(() => filterNotes(allNotes, view), [allNotes, view]);
   const storedNote = allNotes.find((note) => note.id === activeNoteId) ?? null;
-  const sessionForStored =
-    storedNote && noteSession?.noteId === storedNote.id ? noteSession : null;
+  const sessionForStored = storedNote && noteSession?.noteId === storedNote.id ? noteSession : null;
   const activeNote: Note | null = storedNote
     ? {
         ...storedNote,
@@ -962,9 +961,13 @@ export function Workspace() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleNewNote, searchOpen, activeNoteId, noteMode, goBackFromEditor, closeNote]);
 
-  // Latest navigation state for the Android hardware back button, avoiding
-  // stale closures in the native listener.
+  // Latest navigation state for the Android system back button, avoiding
+  // stale closures in the native listener. The listener itself lives in
+  // the app shell (SystemBackMount); this component only registers its
+  // chain with the coordinator while mounted.
   const backStateRef = useRef<{
+    lockDialogOpen: boolean;
+    aiDialogOpen: boolean;
     searchOpen: boolean;
     prompt: PromptRequest | null;
     confirmation: Confirmation | null;
@@ -973,6 +976,8 @@ export function Workspace() {
     activeNoteId: string | null;
     noteMode: "read" | "edit";
   }>({
+    lockDialogOpen: false,
+    aiDialogOpen: false,
     searchOpen: false,
     prompt: null,
     confirmation: null,
@@ -982,6 +987,8 @@ export function Workspace() {
     noteMode: "read",
   });
   backStateRef.current = {
+    lockDialogOpen: Boolean(lockDialog),
+    aiDialogOpen: Boolean(aiDialog),
     searchOpen,
     prompt,
     confirmation,
@@ -992,60 +999,62 @@ export function Workspace() {
   };
 
   /**
-   * Android hardware back: dialogs -> search -> editor -> Read View ->
-   * Notes list. Returns true when the press was consumed.
+   * The workspace's Android back chain: dialogs -> search -> editor ->
+   * Read View -> Notes list. Step selection is the pure
+   * `resolveWorkspaceBackStep` (system-back.ts); this maps the step to
+   * the matching close. Returns true when the press was consumed.
    */
   const handleSystemBack = useCallback((): boolean => {
     const state = backStateRef.current;
-    if (state.versionHistoryNote) {
-      setVersionHistoryNote(null);
-      return true;
+    const step = resolveWorkspaceBackStep({
+      lockDialogOpen: state.lockDialogOpen,
+      aiDialogOpen: state.aiDialogOpen,
+      versionHistoryOpen: Boolean(state.versionHistoryNote),
+      reminderOpen: Boolean(state.reminderTargetNote),
+      confirmationOpen: Boolean(state.confirmation),
+      promptOpen: Boolean(state.prompt),
+      searchOpen: state.searchOpen,
+      activeNoteId: state.activeNoteId,
+      noteMode: state.noteMode,
+    });
+    switch (step) {
+      case "lock-dialog":
+        setLockDialog(null);
+        return true;
+      case "ai-dialog":
+        setAiDialog(null);
+        return true;
+      case "version-history":
+        setVersionHistoryNote(null);
+        return true;
+      case "reminder":
+        setReminderTargetNote(null);
+        return true;
+      case "confirmation":
+        setConfirmation(null);
+        return true;
+      case "prompt":
+        setPrompt(null);
+        return true;
+      case "search":
+        setSearchOpen(false);
+        setQuery("");
+        return true;
+      case "editor":
+        void goBackFromEditor();
+        return true;
+      case "note":
+        void closeNote();
+        return true;
+      default:
+        return false;
     }
-    if (state.reminderTargetNote) {
-      setReminderTargetNote(null);
-      return true;
-    }
-    if (state.confirmation) {
-      setConfirmation(null);
-      return true;
-    }
-    if (state.prompt) {
-      setPrompt(null);
-      return true;
-    }
-    if (state.searchOpen) {
-      setSearchOpen(false);
-      setQuery("");
-      return true;
-    }
-    if (state.activeNoteId && state.noteMode === "edit") {
-      void goBackFromEditor();
-      return true;
-    }
-    if (state.activeNoteId) {
-      void closeNote();
-      return true;
-    }
-    return false;
   }, [goBackFromEditor, closeNote]);
 
-  useEffect(() => {
-    if (!Capacitor.isNativePlatform()) return;
-    let cancelled = false;
-    let handle: PluginListenerHandle | undefined;
-    void CapacitorApp.addListener("backButton", () => {
-      if (!handleSystemBack()) {
-        void CapacitorApp.minimizeApp();
-      }
-    }).then((listener) => {
-      if (cancelled) void listener.remove();
-      else handle = listener;
-    });
-    return () => {
-      cancelled = true;
-      handle?.remove();
-    };
-  }, [handleSystemBack]);
+  // Register the chain with the app-shell back coordinator; it is
+  // consulted only while this workspace is mounted on a workspace
+  // route. The coordinator owns the single native listener.
+  useEffect(() => registerWorkspaceBackHandler(handleSystemBack), [handleSystemBack]);
 
   const actions: NoteActions = useMemo(
     () => ({
@@ -1695,8 +1704,7 @@ export function Workspace() {
       {lockDialog &&
         (() => {
           // Always hand the dialog the freshest row so lock state stays live.
-          const dialogNote =
-            allNotes.find((n) => n.id === lockDialog.note.id) ?? lockDialog.note;
+          const dialogNote = allNotes.find((n) => n.id === lockDialog.note.id) ?? lockDialog.note;
           return (
             <NoteLockDialog
               note={dialogNote}
@@ -1708,9 +1716,7 @@ export function Workspace() {
               }
               onClose={() => setLockDialog(null)}
               onLocked={() =>
-                setNoteSession((prev) =>
-                  prev?.noteId === dialogNote.id ? null : prev,
-                )
+                setNoteSession((prev) => (prev?.noteId === dialogNote.id ? null : prev))
               }
               onLockRemoved={() => setNoteSession(null)}
             />
