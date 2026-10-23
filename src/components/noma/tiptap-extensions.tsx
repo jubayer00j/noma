@@ -150,6 +150,19 @@ export const NoteLinkNode = Node.create<NoteLinkNodeOptions>({
         editor: this.editor,
         char: "[[",
         ...suggestion,
+        // The chip is an inline atom and cannot live in code, so never open
+        // the picker inside a code block or with the code mark active.
+        // (After the spread so configured options can't override the guard.)
+        allow: ({ state }) => {
+          const { $from } = state.selection;
+          const codeMark = state.schema.marks["code"];
+          const marks = [...$from.marks(), ...(state.storedMarks ?? [])];
+          if (codeMark && marks.some((mark) => mark.type === codeMark)) return false;
+          for (let depth = $from.depth; depth > 0; depth--) {
+            if ($from.node(depth).type.name === "codeBlock") return false;
+          }
+          return true;
+        },
       }),
     ];
   },

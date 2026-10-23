@@ -16,7 +16,7 @@ const CANDIDATES: NoteLinkItem[] = [
 
 let editor: Editor | null = null;
 
-function createEditor() {
+function createEditor(content = "<p></p>") {
   const element = document.createElement("div");
   document.body.appendChild(element);
   editor = new Editor({
@@ -25,7 +25,7 @@ function createEditor() {
       noteLinkItems: (query) =>
         CANDIDATES.filter((item) => item.title.toLowerCase().includes(query.toLowerCase())),
     }),
-    content: "<p></p>",
+    content,
   });
   editor.commands.focus("end");
   return editor;
@@ -113,6 +113,38 @@ describe("noteLink [[ suggestion (real editor)", () => {
     });
     // The literal text stays; only the picker went away.
     expect(instance.state.doc.textContent).toContain("[[Ga");
+  });
+
+  it("typing [[ inside a code block does not activate the suggestion", async () => {
+    // Trailing space so the `[[` has an allowed prefix and the suggestion
+    // matcher genuinely finds a match — only the code guard can stop it.
+    const instance = createEditor("<pre><code>const x = </code></pre>");
+    instance.commands.insertContent("[[Quar");
+
+    expect(suggestionState(instance)?.active).toBe(false);
+    // Give the picker a chance to mount — it must not.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(document.body.querySelector('[role="listbox"]')).toBeNull();
+    // The typed text landed in the code block, exactly as typed.
+    const codeBlocks: string[] = [];
+    instance.state.doc.descendants((node) => {
+      if (node.type.name === "codeBlock") codeBlocks.push(node.textContent);
+    });
+    expect(codeBlocks).toEqual(["const x = [[Quar"]);
+  });
+
+  it("typing [[ inside inline code does not activate the suggestion", async () => {
+    const instance = createEditor("<p>see <code>git log</code> end</p>");
+    // "git log" spans doc positions 5–12; position 9 sits inside the code
+    // segment, right after its space — an allowed prefix for the matcher,
+    // so again only the code guard can stop the suggestion.
+    instance.commands.setTextSelection(9);
+    instance.commands.insertContent("[[Gi");
+
+    expect(suggestionState(instance)?.active).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(document.body.querySelector('[role="listbox"]')).toBeNull();
+    expect(instance.state.doc.textContent).toContain("git [[Gilog");
   });
 
   it("a stored chip parses back into a noteLink node (schema parity)", () => {
