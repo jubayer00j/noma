@@ -114,6 +114,22 @@ public class MainActivity extends BridgeActivity {
         WebView webView = bridge != null ? bridge.getWebView() : null;
         if (webView != null) {
             webView.addJavascriptInterface(new NomaSplashBridge(), "NomaSplash");
+            // Insurance (review, PR #75): the interface registration
+            // above runs in the same UI-thread task that queued the
+            // page load — before any script can execute — but it leans
+            // on main-thread sequencing rather than a documented
+            // guarantee. postVisualStateCallback is Android's
+            // purpose-built "first frame composited" signal for splash
+            // dismissal: register it as a parallel trigger into the
+            // same dismiss policy. dismissSplash() is idempotent, so
+            // the two triggers can race safely, and if neither ever
+            // fires the fallback below still dismisses.
+            webView.postVisualStateCallback(1L, new WebView.VisualStateCallback() {
+                @Override
+                public void onComplete(long requestId) {
+                    onSplashReadySignal();
+                }
+            });
         }
 
         // Fallback: dismiss even if no ready signal ever arrives.
