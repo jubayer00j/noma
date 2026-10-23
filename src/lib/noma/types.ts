@@ -71,6 +71,9 @@ export interface Tag {
   id: string;
   name: string;
   createdAt: number;
+  /** Bumped on rename so sync can propagate it. Absent on pre-sync rows —
+   * merge logic falls back to `createdAt` for those. */
+  updatedAt?: number;
 }
 
 export interface AttachmentMeta {
@@ -80,6 +83,10 @@ export interface AttachmentMeta {
   mimeType: string;
   size: number;
   createdAt: number;
+  /** Bumped whenever `data` changes (including note lock/unlock
+   * re-encryption) so sync can propagate the new payload. Absent on
+   * pre-sync rows — merge logic falls back to `createdAt` for those. */
+  updatedAt?: number;
   /** Data URL kept locally so attachments survive offline + export.
    * When the owning note is locked this holds an encryption envelope instead. */
   data: string;
@@ -167,6 +174,42 @@ export interface BackupManifest {
   reminderCount?: number;
   ownerId?: string | null;
   libraryId?: string | null;
+  /** Device that wrote this snapshot (see sync.ts device identity). Additive —
+   * older readers ignore it. */
+  deviceId?: string | null;
+}
+
+/** Entity kinds that participate in multi-device sync. */
+export type SyncEntity = "note" | "folder" | "tag" | "attachment" | "reminder";
+
+/**
+ * A hard-deletion marker that travels inside backups (`sync.json`) so a
+ * "delete forever" on one device propagates to the others instead of the
+ * item resurrecting from their next snapshot. Kept for 90 days.
+ */
+export interface SyncTombstone {
+  entity: SyncEntity;
+  id: string;
+  deletedAt: number;
+  deviceId: string;
+}
+
+/**
+ * Per-database sync bookkeeping (single row, id "state", in the `syncMeta`
+ * table). `hashes` is the three-way merge base: content hash of every
+ * entity — plus `tombstone:<entity>:<id>` entries — as of the last
+ * successful merge. `lastRemoteSignature` is the sync signature of the
+ * snapshot Drive is known to hold, which is what push decisions compare
+ * against (the base alone can't serve: a pull-only merge advances it
+ * without anything reaching Drive).
+ */
+export interface SyncState {
+  id: "state";
+  lastSyncAt: number | null;
+  lastRemoteModifiedTime: number | null;
+  lastRemoteChecksum: string | null;
+  lastRemoteSignature: string | null;
+  hashes: Record<string, string>;
 }
 
 /**

@@ -273,7 +273,7 @@ function SettingsPage() {
 
         <Section
           title="Google Drive"
-          description="Optional, and independent from how you sign in to Noma."
+          description="Optional, and independent from how you sign in to Noma. Connect Drive to keep your notes in sync across devices and backed up."
         >
           <DriveCard
             backupMode={settings.backupMode}

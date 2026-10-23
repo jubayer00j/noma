@@ -1,25 +1,28 @@
-import { backupNow, getConnection, hasUnbackedChanges } from "./drive";
+import { getConnection, hasUnbackedChanges } from "./drive";
+import { syncNow, type SyncReason } from "./sync";
 import type { NomaDatabase } from "./db";
 import type { BackupMode } from "./types";
 
 /**
- * The app-level automatic backup engine.
+ * The app-level sync & backup engine.
  *
  * This replaces the old Settings-card timer, which only ran while the
  * Settings screen was open — the reason "auto backup" appeared to do
  * nothing. The engine is mounted once in the app shell and lives for the
- * whole session:
+ * whole session, driving `syncNow` (see sync.ts) — every run is a
+ * pull-merge-push cycle over the canonical Drive snapshot:
  *
  * - "sync" mode: any write to the backed-up tables marks the library
- *   dirty; after a short quiet period the current snapshot is uploaded.
- *   Offline changes stay pending and flush on reconnect / foreground.
- * - "scheduled" mode (WhatsApp-style): a backup runs when the chosen
- *   interval has elapsed since the last successful one — checked at
- *   start, on foreground, on reconnect, and on a slow tick. Overdue
- *   backups therefore land at the next app open.
- *
- * Backups only ever upload when the library signature actually changed
- * (`hasUnbackedChanges`), so an idle app never spams Drive.
+ *   dirty; after a short quiet period a full cycle runs, so changes from
+ *   other devices are merged in before ours go up. Offline changes stay
+ *   pending and flush on reconnect / foreground. Start, foreground,
+ *   reconnect and a slow tick also run cycles — the remote check inside
+ *   a cycle is a single metadata read, so an idle app stays quiet.
+ * - "scheduled" mode (WhatsApp-style): when the chosen interval has
+ *   elapsed since the last successful backup — checked at start, on
+ *   foreground, on reconnect, and on a slow tick — a full cycle runs
+ *   instead of a bare upload. Overdue cycles therefore land at the next
+ *   app open, and other devices' changes arrive with them.
  */
 
 export interface BackupIntervalPreset {
@@ -123,7 +126,20 @@ export function startBackupScheduler(deps: BackupSchedulerDeps): () => void {
 
   const stage = () => {
     if (!deps.stageSnapshot || deps.getConfig().mode !== "scheduled") return;
-    void deps.stageSnapshot();
+    void (async () => {
+      // Pull-merge first (when online and connected) so the staged
+      // snapshot is never staler than the last known remote state. The
+      // cycle is pull-only here — the push is the worker's job, on
+      // schedule. Staging proceeds with local state even if this fails.
+      try {
+        if (getConnection(ownerId) && (typeof navigator === "undefined" || navigator.onLine)) {
+          await syncNow(db, ownerId, "stage", { pullOnly: true });
+        }
+      } catch {
+        /* staging proceeds with local state */
+      }
+      await deps.stageSnapshot?.();
+    })();
   };
 
   const scheduleStage = () => {
@@ -152,7 +168,7 @@ export function startBackupScheduler(deps: BackupSchedulerDeps): () => void {
     }
   };
 
-  const attempt = async (): Promise<void> => {
+  const attempt = async (reason: SyncReason = "tick"): Promise<void> => {
     if (stopped || running) return;
     const { mode, intervalMinutes } = deps.getConfig();
     if (mode === "off") return;
@@ -168,24 +184,37 @@ export function startBackupScheduler(deps: BackupSchedulerDeps): () => void {
     }
     running = true;
     try {
-      if (!(await hasUnbackedChanges(db, ownerId))) {
+      if (mode === "scheduled") {
+        const due = isScheduledBackupDue(
+          getConnection(ownerId)?.lastBackupAt ?? null,
+          intervalMinutes,
+          Date.now(),
+        );
+        if (!due) {
+          // Between backups the scheduler only tracks whether uploads
+          // are waiting; the pull half of the cycle runs with the backup.
+          pending = await hasUnbackedChanges(db, ownerId);
+          return;
+        }
+        const result = await syncNow(db, ownerId, reason);
+        dirty = false;
+        pending = result.status === "failed";
+        return;
+      }
+      // Sync mode: a full pull-merge-push cycle. Merge-applied writes
+      // re-fire the dirty hooks, but the cycle's single-flight guard and
+      // signature comparison keep that from looping into another upload.
+      const result = await syncNow(db, ownerId, reason);
+      if (result.status === "synced") {
         dirty = false;
         pending = false;
-        return;
-      }
-      if (
-        mode === "scheduled" &&
-        !isScheduledBackupDue(getConnection(ownerId)?.lastBackupAt ?? null, intervalMinutes, Date.now())
-      ) {
+      } else if (result.status === "failed") {
+        // Failures stay pending and the next trigger retries.
         pending = true;
-        return;
+      } else {
+        pending = dirty;
       }
-      await backupNow(db, ownerId);
-      dirty = false;
-      pending = false;
     } catch {
-      // Uploads fail quietly by design: the changes stay pending and the
-      // next trigger (edit, reconnect, foreground, tick) retries.
       pending = true;
     } finally {
       running = false;
@@ -200,29 +229,30 @@ export function startBackupScheduler(deps: BackupSchedulerDeps): () => void {
     report();
     if (deps.getConfig().mode === "sync") {
       if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => void attempt(), SYNC_DEBOUNCE_MS);
+      debounceTimer = setTimeout(() => void attempt("edit"), SYNC_DEBOUNCE_MS);
     }
     scheduleStage();
   };
 
   // Dirty tracking: every write to a backed-up table counts. Restore/import
-  // writes count too — uploading the just-restored state back is correct.
-  const tables = [db.notes, db.folders, db.tags, db.attachments, db.reminders];
+  // and merge-applied writes count too — the cycle decides by signature
+  // whether anything actually needs to move.
+  const tables = [db.notes, db.folders, db.tags, db.attachments, db.reminders, db.tombstones];
   for (const table of tables) {
     table.hook("creating", markDirty);
     table.hook("updating", markDirty);
     table.hook("deleting", markDirty);
   }
 
-  const onOnline = () => void attempt();
+  const onOnline = () => void attempt("reconnect");
   const onVisibility = () => {
     if (document.visibilityState === "visible") {
-      void attempt();
+      void attempt("foreground");
     } else {
       if (deps.getConfig().mode === "sync" && dirty) {
         // Best-effort flush as the app goes to the background.
         if (debounceTimer) clearTimeout(debounceTimer);
-        void attempt();
+        void attempt("edit");
       }
       if (dirty) {
         // Keep the staged snapshot fresh for the background worker — this
@@ -232,12 +262,14 @@ export function startBackupScheduler(deps: BackupSchedulerDeps): () => void {
       }
     }
   };
+  const onSyncCompleted = () => report();
   window.addEventListener("online", onOnline);
+  window.addEventListener("noma:sync-completed", onSyncCompleted);
   document.addEventListener("visibilitychange", onVisibility);
-  const tick = setInterval(() => void attempt(), SCHEDULE_TICK_MS);
+  const tick = setInterval(() => void attempt("tick"), SCHEDULE_TICK_MS);
   const startTimer = setTimeout(() => {
     report();
-    void attempt();
+    void attempt("start");
     stage();
   }, 2_000);
   report();
@@ -249,6 +281,7 @@ export function startBackupScheduler(deps: BackupSchedulerDeps): () => void {
     clearTimeout(startTimer);
     clearInterval(tick);
     window.removeEventListener("online", onOnline);
+    window.removeEventListener("noma:sync-completed", onSyncCompleted);
     document.removeEventListener("visibilitychange", onVisibility);
     for (const table of tables) {
       table.hook.creating.unsubscribe(markDirty);

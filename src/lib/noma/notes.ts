@@ -2,6 +2,7 @@ import { type NomaDatabase, newId } from "./db";
 import { cancelNotification, scheduleNotification } from "./notifications";
 import { countWords, htmlToPlainText, sanitizeHtml } from "./sanitize";
 import { cleanupOrphanedAttachments } from "./media";
+import { recordTombstone } from "./sync";
 import type {
   AlarmToneMode,
   Folder,
@@ -81,6 +82,7 @@ export async function duplicateNote(db: NomaDatabase, id: string): Promise<Note 
           id: newAttachmentId,
           noteId: newNoteId,
           createdAt: now,
+          updatedAt: now,
         };
         await db.attachments.put(clonedAttachment);
 
@@ -139,6 +141,9 @@ export async function deleteNoteForever(db: NomaDatabase, id: string): Promise<v
     await db.notes.delete(id);
   });
 
+  // The note tombstone cascades to its attachments and reminders on other
+  // devices, so they don't need markers of their own.
+  await recordTombstone(db, "note", id);
   await cleanupOrphanedAttachments(db);
 }
 
@@ -173,6 +178,7 @@ export async function deleteFolder(db: NomaDatabase, id: string): Promise<void> 
     for (const note of notes) await updateNote(db, note.id, { folderId: null });
     await db.folders.delete(id);
   });
+  await recordTombstone(db, "folder", id);
 }
 
 export const moveNote = (db: NomaDatabase, noteId: string, folderId: string | null) =>
@@ -186,13 +192,14 @@ export async function createTag(db: NomaDatabase, name: string): Promise<Tag> {
     .filter((t) => t.name.toLowerCase() === clean.toLowerCase())
     .first();
   if (existing) return existing;
-  const tag: Tag = { id: newId(), name: clean || "untitled", createdAt: Date.now() };
+  const now = Date.now();
+  const tag: Tag = { id: newId(), name: clean || "untitled", createdAt: now, updatedAt: now };
   await db.tags.put(tag);
   return tag;
 }
 
 export const renameTag = (db: NomaDatabase, id: string, name: string) =>
-  db.tags.update(id, { name: name.trim().replace(/^#/, "") });
+  db.tags.update(id, { name: name.trim().replace(/^#/, ""), updatedAt: Date.now() });
 
 export async function deleteTag(db: NomaDatabase, id: string): Promise<void> {
   await db.transaction("rw", db.tags, db.notes, async () => {
@@ -202,6 +209,7 @@ export async function deleteTag(db: NomaDatabase, id: string): Promise<void> {
     }
     await db.tags.delete(id);
   });
+  await recordTombstone(db, "tag", id);
 }
 
 export async function setNoteTags(
@@ -338,6 +346,7 @@ export async function setNoteReminder(
   for (const extra of extras) {
     await cancelNotification(extra.id, extra.notificationId);
     await db.reminders.delete(extra.id);
+    await recordTombstone(db, "reminder", extra.id);
   }
 
   if (primary) {
@@ -390,6 +399,9 @@ export async function deleteNoteReminder(db: NomaDatabase, noteId: string): Prom
     await db.reminders.where("noteId").equals(noteId).delete();
     await db.notes.update(noteId, { reminderAt: null });
   });
+  for (const existing of existingList) {
+    await recordTombstone(db, "reminder", existing.id);
+  }
 }
 
 export async function updateReminderStatus(
@@ -447,6 +459,7 @@ export async function cleanupOrphanedReminders(db: NomaDatabase): Promise<void> 
   for (const r of orphaned) {
     await cancelNotification(r.id, r.notificationId);
     await db.reminders.delete(r.id);
+    await recordTombstone(db, "reminder", r.id);
   }
 
   // 2. Group non-orphaned reminders by noteId and clean up accidental duplicates
@@ -466,6 +479,7 @@ export async function cleanupOrphanedReminders(db: NomaDatabase): Promise<void> 
       for (const extra of extras) {
         await cancelNotification(extra.id, extra.notificationId);
         await db.reminders.delete(extra.id);
+        await recordTombstone(db, "reminder", extra.id);
       }
     }
   }

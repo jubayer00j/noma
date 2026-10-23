@@ -79,6 +79,8 @@ export async function lockNote(
       await db.attachments.update(attachment.id, {
         data: await encryptText(nek, attachment.data),
         encrypted: true,
+        // Bump so sync's newest-wins merge propagates the sealed payload.
+        updatedAt: Date.now(),
       });
     }
   }
@@ -229,6 +231,7 @@ export async function encryptPlaintextAttachments(
       await db.attachments.update(attachment.id, {
         data: await encryptText(nek, attachment.data),
         encrypted: true,
+        updatedAt: Date.now(),
       });
       sealed++;
     }
@@ -266,7 +269,11 @@ export async function removeNoteLock(
     if (attachment.encrypted) {
       const plain = data.attachments.get(attachment.id);
       if (plain !== undefined) {
-        await db.attachments.update(attachment.id, { data: plain, encrypted: false });
+        await db.attachments.update(attachment.id, {
+          data: plain,
+          encrypted: false,
+          updatedAt: Date.now(),
+        });
       }
     }
   }
