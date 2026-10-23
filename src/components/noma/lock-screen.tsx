@@ -73,7 +73,7 @@ export function LockScreen() {
   ]);
 
   return (
-    <div className="noma-leaf-watermark flex min-h-dvh flex-col items-center justify-center bg-background px-4 py-8">
+    <div className="noma-leaf-watermark flex min-h-dvh flex-col items-center justify-center bg-background px-4 pt-safe pb-safe">
       <CredentialPrompt
         heading="Noma Locked"
         subheading="Enter your credentials to access your local notes library"

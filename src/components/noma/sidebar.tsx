@@ -116,7 +116,7 @@ export function NomaSidebar({
   };
 
   return (
-    <div className="flex h-full flex-col bg-sidebar">
+    <div className="flex h-full flex-col bg-sidebar pt-safe pb-safe pl-safe">
       <div className="flex items-center justify-between px-4 pt-5 pb-3">
         <span className="flex items-center gap-2.5">
           <img
