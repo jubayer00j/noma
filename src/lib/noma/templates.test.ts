@@ -370,15 +370,7 @@ describe("template partitioning in views and search", () => {
   const notes = [template, archivedTemplate, trashedTemplate, plain];
 
   it("excludes templates from every ordinary view", () => {
-    const kinds: ViewKind[] = [
-      "all",
-      "recent",
-      "pinned",
-      "favorites",
-      "archive",
-      "trash",
-      "reminders",
-    ];
+    const kinds: ViewKind[] = ["all", "recent", "pinned", "favorites", "archive", "reminders"];
     for (const kind of kinds) {
       const ids = filterNotes(notes, view(kind)).map((n) => n.id);
       expect(ids, kind).not.toContain("tpl");
@@ -387,6 +379,22 @@ describe("template partitioning in views and search", () => {
     }
     expect(filterNotes(notes, view("folder", "f1")).map((n) => n.id)).toEqual([]);
     expect(filterNotes(notes, view("tag", "t1")).map((n) => n.id)).toEqual([]);
+  });
+
+  it("keeps trashed templates reachable in the trash view", () => {
+    const ids = filterNotes(notes, view("trash")).map((n) => n.id);
+    // The trashed template is listed (so it can be restored or deleted
+    // individually); live templates never appear in Trash.
+    expect(ids).toContain("tpl-trash");
+    expect(ids).not.toContain("tpl");
+    expect(ids).not.toContain("tpl-arch");
+  });
+
+  it("returns a restored template to the templates view", () => {
+    const restored = { ...trashedTemplate, deleted: false, deletedAt: null };
+    const withRestored = [template, archivedTemplate, restored, plain];
+    expect(filterNotes(withRestored, view("templates")).map((n) => n.id)).toContain("tpl-trash");
+    expect(filterNotes(withRestored, view("trash")).map((n) => n.id)).not.toContain("tpl-trash");
   });
 
   it("lists live templates in the templates view, title-sorted", () => {

@@ -23,7 +23,10 @@ const RECENT_WINDOW = 1000 * 60 * 60 * 24 * 7;
 export function filterNotes(notes: Note[], view: ViewState): Note[] {
   // Templates are partitioned out of every ordinary view before anything
   // else runs: they are starting points for notes, not notes themselves,
-  // and may only ever surface in the Templates view.
+  // and may only ever surface in the Templates view. The one exception is
+  // Trash: a trashed template must stay reachable there so it can be
+  // restored or deleted individually instead of vanishing until Empty
+  // Trash removes it sight-unseen.
   if (view.kind === "templates") {
     return notes
       .filter((note) => note.isTemplate && !note.deleted)
@@ -45,7 +48,7 @@ export function filterNotes(notes: Note[], view: ViewState): Note[] {
   let result: Note[];
   switch (view.kind) {
     case "trash":
-      result = regular.filter((note) => note.deleted);
+      result = notes.filter((note) => note.deleted);
       break;
     case "archive":
       result = live.filter((note) => note.archived);

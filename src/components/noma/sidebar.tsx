@@ -112,7 +112,7 @@ export function NomaSidebar({
     daily: live.filter((note) => Boolean(note.dailyDate)).length,
     templates: notes.filter((note) => note.isTemplate && !note.deleted).length,
     archive: live.filter((note) => note.archived).length,
-    trash: notes.filter((note) => note.deleted && !note.isTemplate).length,
+    trash: notes.filter((note) => note.deleted).length,
   };
 
   return (
