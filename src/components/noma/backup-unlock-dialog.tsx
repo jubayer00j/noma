@@ -135,6 +135,7 @@ export function BackupUnlockDialog({
               <Label htmlFor="noma-backup-unlock-passphrase">Backup passphrase</Label>
               <PasswordInput
                 id="noma-backup-unlock-passphrase"
+                enterKeyHint="done"
                 className="mt-1.5"
                 value={passphrase}
                 onChange={(event) => setPassphrase(event.target.value)}

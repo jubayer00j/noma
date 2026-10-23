@@ -49,6 +49,7 @@ export function PromptDialog({
         >
           <Input
             autoFocus
+            enterKeyHint="done"
             value={value}
             onChange={(event) => setValue(event.target.value)}
             className="h-10"

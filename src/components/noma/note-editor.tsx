@@ -605,6 +605,7 @@ export function NoteEditor({
 
       <textarea
         ref={titleRef}
+        enterKeyHint="next"
         value={note.title}
         onChange={(event) => onChange({ title: event.target.value.replace(/\n/g, "") })}
         onKeyDown={(event) => {
