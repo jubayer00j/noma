@@ -14,6 +14,7 @@ import { Route as AccountRouteImport } from './routes/account'
 import { Route as AppRouteImport } from './routes/app'
 import { Route as ContactRouteImport } from './routes/contact'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as ShareTargetRouteImport } from './routes/share-target'
 import { Route as SigninRouteImport } from './routes/signin'
 
 const IndexRoute = IndexRouteImport.update({
@@ -41,6 +42,11 @@ const SettingsRoute = SettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ShareTargetRoute = ShareTargetRouteImport.update({
+  id: '/share-target',
+  path: '/share-target',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SigninRoute = SigninRouteImport.update({
   id: '/signin',
   path: '/signin',
@@ -53,6 +59,7 @@ export interface FileRoutesByFullPath {
   '/app': typeof AppRoute
   '/contact': typeof ContactRoute
   '/settings': typeof SettingsRoute
+  '/share-target': typeof ShareTargetRoute
   '/signin': typeof SigninRoute
 }
 export interface FileRoutesByTo {
@@ -61,6 +68,7 @@ export interface FileRoutesByTo {
   '/app': typeof AppRoute
   '/contact': typeof ContactRoute
   '/settings': typeof SettingsRoute
+  '/share-target': typeof ShareTargetRoute
   '/signin': typeof SigninRoute
 }
 export interface FileRoutesById {
@@ -70,13 +78,28 @@ export interface FileRoutesById {
   '/app': typeof AppRoute
   '/contact': typeof ContactRoute
   '/settings': typeof SettingsRoute
+  '/share-target': typeof ShareTargetRoute
   '/signin': typeof SigninRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/account' | '/app' | '/contact' | '/settings' | '/signin'
+  fullPaths:
+    | '/'
+    | '/account'
+    | '/app'
+    | '/contact'
+    | '/settings'
+    | '/share-target'
+    | '/signin'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/account' | '/app' | '/contact' | '/settings' | '/signin'
+  to:
+    | '/'
+    | '/account'
+    | '/app'
+    | '/contact'
+    | '/settings'
+    | '/share-target'
+    | '/signin'
   id:
     | '__root__'
     | '/'
@@ -84,6 +107,7 @@ export interface FileRouteTypes {
     | '/app'
     | '/contact'
     | '/settings'
+    | '/share-target'
     | '/signin'
   fileRoutesById: FileRoutesById
 }
@@ -93,6 +117,7 @@ export interface RootRouteChildren {
   AppRoute: typeof AppRoute
   ContactRoute: typeof ContactRoute
   SettingsRoute: typeof SettingsRoute
+  ShareTargetRoute: typeof ShareTargetRoute
   SigninRoute: typeof SigninRoute
 }
 
@@ -133,6 +158,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/share-target': {
+      id: '/share-target'
+      path: '/share-target'
+      fullPath: '/share-target'
+      preLoaderRoute: typeof ShareTargetRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/signin': {
       id: '/signin'
       path: '/signin'
@@ -149,6 +181,7 @@ const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRoute,
   ContactRoute: ContactRoute,
   SettingsRoute: SettingsRoute,
+  ShareTargetRoute: ShareTargetRoute,
   SigninRoute: SigninRoute,
 }
 export const routeTree = rootRouteImport

@@ -62,6 +62,9 @@ import { useOnline, useSettings } from "@/hooks/use-noma";
 import { useDatabase } from "@/lib/noma/DatabaseContext";
 import { useAppLock } from "@/lib/noma/AppLockContext";
 import { usePendingShortcut } from "@/lib/noma/shortcut";
+import { usePendingCapture, type CaptureRequest } from "@/lib/noma/capture";
+import { initShareTarget } from "@/lib/noma/share-target";
+import { saveImageAttachment } from "@/lib/noma/media";
 import {
   createFolder,
   createNote,
@@ -446,6 +449,13 @@ function WorkspaceShellSkeleton() {
   );
 }
 
+/** Converts a shared image's data URL back into a File for the attachment pipeline. */
+async function dataUrlToFile(dataUrl: string, name: string, mimeType: string): Promise<File> {
+  const response = await fetch(dataUrl);
+  const blob = await response.blob();
+  return new File([blob], name, { type: mimeType });
+}
+
 export function Workspace() {
   const { db, loading: dbLoading } = useDatabase();
   const notes = useLiveQuery(() => db?.notes.toArray() ?? [], [db], undefined);
@@ -466,6 +476,13 @@ export function Workspace() {
   const online = useOnline();
   const { isLocked, isLockStateResolving } = useAppLock();
   const { action: shortcutAction, consumeShortcut } = usePendingShortcut();
+  const { request: captureRequest, consumeCapture } = usePendingCapture();
+
+  // Wire the share-target doors (Android plugin + web boot checks) into the
+  // capture queue once; requests wait there until the gate below consumes them.
+  useEffect(() => {
+    initShareTarget();
+  }, []);
 
   const [view, setView] = useState<ViewState>({ kind: "all" });
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
@@ -695,6 +712,39 @@ export function Workspace() {
     setEditReturnTo("list");
   }, [view, db]);
 
+  /**
+   * Turns a consumed share capture into a real note: body text first, then
+   * each shared image saved through the normal attachment pipeline and
+   * embedded in the body, then the note opens in the editor — the same end
+   * state as handleNewNote, just with content.
+   */
+  const handleShareCapture = useCallback(
+    async (request: Extract<CaptureRequest, { kind: "share" }>) => {
+      if (!db) return;
+      const note = await createNote(db, { title: request.title, content: request.content });
+      let content = request.content;
+      for (const image of request.images) {
+        try {
+          const file = await dataUrlToFile(image.dataUrl, image.name, image.mimeType);
+          const attachment = await saveImageAttachment(db, note.id, file);
+          const alt = attachment.name.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+          content += `<p><img src="noma-attachment://${attachment.id}" alt="${alt}"></p>`;
+        } catch {
+          /* one unreadable image shouldn't sink the whole capture */
+        }
+      }
+      // updateNote re-sanitises and recounts words (createNote stores raw init).
+      if (content) await updateNote(db, note.id, { content });
+      setMobileNavOpen(false);
+      setDraft(null);
+      setSaveState("idle");
+      setActiveNoteId(note.id);
+      setNoteMode("edit");
+      setEditReturnTo("list");
+    },
+    [db],
+  );
+
   // Respond to Android shortcut triggers once DB is loaded and App Lock is unlocked
   useEffect(() => {
     if (shortcutAction === "new-note" && db && !isLockStateResolving && !isLocked) {
@@ -702,6 +752,23 @@ export function Workspace() {
       void handleNewNote();
     }
   }, [shortcutAction, db, isLockStateResolving, isLocked, consumeShortcut, handleNewNote]);
+
+  // Consume quick-capture requests (share target, widget, tile, PWA doors)
+  // under the same gate as the launcher shortcut: DB loaded, App Lock open.
+  useEffect(() => {
+    if (!captureRequest || !db || isLockStateResolving || isLocked) return;
+    consumeCapture(captureRequest.id);
+    if (captureRequest.kind === "share") void handleShareCapture(captureRequest);
+    else void handleNewNote();
+  }, [
+    captureRequest,
+    db,
+    isLockStateResolving,
+    isLocked,
+    consumeCapture,
+    handleShareCapture,
+    handleNewNote,
+  ]);
 
   // Keyboard shortcuts.
   useEffect(() => {

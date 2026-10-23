@@ -26,10 +26,52 @@
                 <data android:scheme="app.noma.notes" />
             </intent-filter>
 
+            <!-- Share target: other apps can share text and images into Noma.
+                 Extraction lives in NomaSharePlugin (fed by MainActivity). -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+
             <meta-data
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
         </activity>
+
+        <!-- Home-screen capture widget: one tap opens a fresh note. -->
+        <receiver
+            android:name=".NomaWidgetProvider"
+            android:label="@string/widget_label"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/noma_widget_info" />
+        </receiver>
+
+        <!-- Quick Settings tile: capture from the QS panel (reachable from
+             the lock screen on most devices). Never bypasses App Lock. -->
+        <service
+            android:name=".NomaCaptureTileService"
+            android:label="@string/tile_label"
+            android:icon="@mipmap/ic_launcher"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.ACTIVE_TILE"
+                android:value="true" />
+            <meta-data
+                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
+                android:value="false" />
+        </service>
 
         <provider
             android:name="androidx.core.content.FileProvider"
