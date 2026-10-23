@@ -16,6 +16,7 @@ import {
   type BackupPayload,
 } from "./backup";
 import type { BackupManifest } from "./types";
+import { clearAiSettings } from "./ai";
 
 /** Narrowest scope that still lets Noma manage only the files it creates. */
 const SCOPE = "https://www.googleapis.com/auth/drive.file";
@@ -537,6 +538,10 @@ export async function disconnectDrive(ownerId: string | null): Promise<void> {
   // so both paths are covered — a different account connecting later
   // never inherits this account's wrap state.
   clearBackupEncryptionRecord(ownerId);
+  // Same rule for the AI key record: it is keyed to this account and
+  // lives only on this device, so disconnect/sign-out clears it too —
+  // a different account signing in later never inherits the key.
+  clearAiSettings(ownerId);
 }
 
 export async function listDriveBackups(ownerId: string | null): Promise<DriveBackupFile[]> {

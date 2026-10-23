@@ -36,6 +36,7 @@ import { BackupUnlockDialog } from "@/components/noma/backup-unlock-dialog";
 import { BackupKeyNeededError, getBackupDeviceKey } from "@/lib/noma/backup-crypto";
 import { DriveCard } from "@/components/noma/drive-card";
 import { ImportSection } from "@/components/noma/import-section";
+import { AiSection } from "@/components/noma/ai-section";
 import { AppLockSection } from "@/components/noma/app-lock-section";
 import { ThemePicker } from "@/components/noma/theme-picker";
 
@@ -310,6 +311,13 @@ function SettingsPage() {
               void update({ backupIntervalMinutes })
             }
           />
+        </Section>
+
+        <Section
+          title="AI features"
+          description="Optional. Bring your own Gemini key for note summaries and tag suggestions — only ever when you tap."
+        >
+          <AiSection ownerId={auth.user?.uid ?? null} />
         </Section>
 
         <Section
