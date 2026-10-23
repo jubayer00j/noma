@@ -13,6 +13,12 @@
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
+        <!-- Edge-to-edge (native-feel #2): the app's own surfaces paint
+             behind both system bars; bar icon contrast is driven from the
+             web layer via the StatusBar plugin. On Android 15+ the platform
+             forces transparent bars anyway; these items cover API 24–34. -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
 
 

@@ -6,6 +6,7 @@ import { Welcome } from "./welcome";
 import { useSettings } from "@/hooks/use-noma";
 import { useAuth } from "@/lib/noma/auth";
 import { applyTheme } from "@/lib/noma/theme";
+import { syncSystemBarsToTheme } from "@/lib/noma/system-bars";
 import { useAppLock } from "@/lib/noma/AppLockContext";
 import { LockScreen } from "./lock-screen";
 
@@ -19,13 +20,18 @@ export function AppGate({ children }: { children: ReactNode }) {
   const { settings, update, ready } = useSettings();
 
   // Light = light, Dark = dark, System follows the OS and reacts to changes live.
+  // The system-bar icon contrast rides the same signal (native only).
   useEffect(() => {
     if (!ready) return;
     const choice = settings.theme;
     applyTheme(choice);
+    syncSystemBarsToTheme(choice);
     if (choice !== "system") return;
     const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = () => applyTheme("system");
+    const onChange = () => {
+      applyTheme("system");
+      syncSystemBarsToTheme("system");
+    };
     media.addEventListener("change", onChange);
     return () => media.removeEventListener("change", onChange);
   }, [settings.theme, ready]);

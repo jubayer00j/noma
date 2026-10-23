@@ -470,7 +470,7 @@ export function WorkspaceSurfaces({
       <NotesListSurfaceContext.Provider value={surfaceApi}>
         <div
           ref={setSurfaceElCallback}
-          className="noma-scroll notes-list-surface min-h-0 flex-1 overflow-y-auto"
+          className="noma-scroll notes-list-surface min-h-0 flex-1 overflow-y-auto pb-safe"
           hidden={noteOpen}
           tabIndex={-1}
           data-testid="notes-list-surface"
@@ -531,7 +531,7 @@ function WorkspaceShellSkeleton() {
       aria-busy="true"
       aria-label="Loading workspace"
     >
-      <aside className="hidden w-64 shrink-0 border-r border-sidebar-border bg-sidebar md:block">
+      <aside className="hidden w-64 shrink-0 border-r border-sidebar-border bg-sidebar pt-safe pl-safe md:block">
         <div className="space-y-3 px-4 pt-5">
           <div className="flex items-center gap-2.5">
             <img
@@ -551,8 +551,8 @@ function WorkspaceShellSkeleton() {
           ))}
         </div>
       </aside>
-      <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-3 sm:px-5">
+      <main className="flex min-w-0 flex-1 flex-col pr-safe pl-safe md:pl-0">
+        <header className="flex min-h-14 shrink-0 items-center gap-2 border-b border-border px-3 pt-safe sm:px-5">
           <div className="h-4 w-28 animate-pulse rounded bg-muted motion-reduce:animate-none" />
           <div className="ml-auto h-8 w-24 animate-pulse rounded-md bg-muted/60 motion-reduce:animate-none" />
         </header>
@@ -1332,8 +1332,15 @@ export function Workspace() {
         </SheetContent>
       </Sheet>
 
-      <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-3 sm:px-5">
+      <main
+        className={cn(
+          "flex min-w-0 flex-1 flex-col pr-safe pl-safe",
+          // When the desktop sidebar is rendered it owns the left edge
+          // (its own pl-safe); otherwise this column is the left edge.
+          !settings.sidebarCollapsed && "md:pl-0",
+        )}
+      >
+        <header className="flex min-h-14 shrink-0 items-center gap-2 border-b border-border px-3 pt-safe sm:px-5">
           <Button
             variant="ghost"
             size="icon"

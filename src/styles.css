@@ -441,6 +441,31 @@
   box-shadow: var(--noma-glow);
 }
 
+/*
+ * Safe-area inset padding (native-feel #2: edge-to-edge). The native
+ * window draws behind the system bars and display cutout; shells that
+ * own a screen edge add the matching `*-safe` utility so their
+ * background paints into the bar zone while content stays clear of it.
+ * Insets are 0 in browsers without a cutout, so PWA/desktop rendering
+ * is unchanged. One mechanism, used only on edge-owning shells — never
+ * sprinkled on inner components.
+ */
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+@utility pl-safe {
+  padding-left: env(safe-area-inset-left, 0px);
+}
+
+@utility pr-safe {
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
 /* Gradient primary buttons and key actions. */
 .noma-cta {
   background-image: var(--noma-gradient);

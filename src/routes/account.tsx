@@ -149,7 +149,7 @@ function AccountPage() {
 
   return (
     <div className="noma-scroll min-h-dvh overflow-y-auto bg-background">
-      <header className="sticky top-0 z-10 flex h-14 items-center gap-2 border-b border-border bg-background/90 px-4 backdrop-blur sm:px-6">
+      <header className="sticky top-0 z-10 flex min-h-14 items-center gap-2 border-b border-border bg-background/90 px-4 pt-safe backdrop-blur sm:px-6">
         <Button asChild variant="ghost" size="sm" className="gap-1.5 text-muted-foreground">
           <Link to="/">
             <ArrowLeft className="size-4" /> Notes
