@@ -83,10 +83,15 @@ Ten items to make the Android app feel native, worked in order. (The roadmap abo
 - Touch pointers only (a mouse drag can never fling a note), vertical scrolling is never hijacked, and only the card moves — the row's measured height never shifts, so the virtualized list stays calm. Every swipe calls the same action the ⋮ menu does; no new write paths.
 - Fallout fix from #71: the bottom-centre toast (Undo included) now also clears the gesture-bar inset on edge-to-edge devices — sonner's offsets had no safe-area awareness, so the toast could sit under the gesture pill.
 
+### Haptics — PR #74
+- A small, deliberate haptic vocabulary — and nothing more. A swipe that crosses the commit threshold ticks faintly under the finger; releasing to Pin or Restore answers with a light tap, Trash with a firmer one. The App Lock and locked notes buzz the success pattern when the gate opens and the warning pattern on a wrong credential.
+- Everything else stays silent by design — taps, menu actions, typing, autosave, backups. Haptics are punctuation, not narration. One toggle (Settings → Appearance → Haptic feedback, on by default), native-only — the web app never vibrates — behind a fire-and-forget bridge (official `@capacitor/haptics`), so a haptics failure can never break the action it decorates.
+
 ### Device-only proofs
 - Back from Settings returns to the workspace every time; back with a menu or dialog open closes it first; back at the lock screen minimizes and reveals nothing; predictive-back preview on Android 13+.
 - **Edge-to-edge (#71):** bars stay transparent in every theme; headers clear the status bar; sheets and drawers clear the gesture area; cutout insets in landscape.
 - **Swipe actions (#73):** swipe feel in the Android WebView; vertical scroll never hijacked; tap still opens; half-swiped rows reset on scroll; Undo toast reachable and tappable above the gesture bar; trash-view left swipe opens the confirm dialog; locked-note swipe round-trip.
+- **Haptics (#74):** slow swipe ticks the moment the underlay arms (and re-ticks after dropping back below the threshold); trash commit feels firmer than pin; wrong PIN warns and the right PIN confirms at both the App Lock and a locked note; the Settings toggle silences everything immediately; behaviour with system touch-feedback disabled noted.
 
 ## 2026-10-22
 

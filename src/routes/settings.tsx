@@ -242,6 +242,19 @@ function SettingsPage() {
               }
             />
           </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-0.5">
+              <Label className="text-base font-medium">Haptic feedback</Label>
+              <p className="text-xs text-muted-foreground">
+                Subtle vibration for swipes and unlock, in the Android app
+              </p>
+            </div>
+            <Switch
+              checked={settings.hapticsEnabled}
+              onCheckedChange={(checked) => void update({ hapticsEnabled: checked })}
+            />
+          </div>
         </Section>
 
         <Section

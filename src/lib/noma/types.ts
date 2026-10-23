@@ -130,6 +130,8 @@ export interface AppSettings {
   /** Scheduled-mode interval in minutes — a preset or a custom value. */
   backupIntervalMinutes: number;
   sidebarCollapsed: boolean;
+  /** Subtle haptic feedback for swipe commits and unlock outcomes (native-feel #4). */
+  hapticsEnabled: boolean;
   /** Firebase uid that has completed the first-run welcome on this device. */
   onboardedFor: string | null;
   displayName: string;
@@ -265,6 +267,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   backupMode: "off",
   backupIntervalMinutes: 1440,
   sidebarCollapsed: false,
+  hapticsEnabled: true,
   onboardedFor: null,
   displayName: "",
 

@@ -6,6 +6,15 @@ import { NoteItem, type NoteActions } from "./note-list";
 import type { Note } from "@/lib/noma/types";
 import type { ViewKind } from "@/lib/noma/view";
 
+// Native-feel #4: the row's haptic calls are asserted through a mock of
+// the bridge module (the bridge itself is unit-tested in haptics.test.ts
+// with the plugin mocked — here only the wiring is under test).
+const hapticsMock = vi.hoisted(() => ({
+  hapticSwipeArmed: vi.fn(),
+  hapticSwipeCommit: vi.fn(),
+}));
+vi.mock("@/lib/noma/haptics", () => hapticsMock);
+
 (globalThis as Record<string, unknown>)["IS_REACT_ACT_ENVIRONMENT"] = true;
 
 // happy-dom has no layout: clientWidth is 0, which would make the swipe
@@ -312,5 +321,76 @@ describe("NoteItem swipe gestures (native-feel #3)", () => {
     const recycled = cardEl();
     expect(recycled.style.transform ?? "").toBe("");
     expect(underlayEl()).toBeNull();
+  });
+});
+
+describe("NoteItem haptics (native-feel #4)", () => {
+  beforeEach(() => {
+    hapticsMock.hapticSwipeArmed.mockClear();
+    hapticsMock.hapticSwipeCommit.mockClear();
+  });
+
+  it("ticks once when the drag crosses the commit threshold, and again after dropping back and re-crossing", () => {
+    const actions = makeActions();
+    renderRow(makeNote(), actions);
+    const card = cardEl();
+
+    firePointer(card, "pointerdown", { x: 200, t: 0 });
+    // dx −80: dragging, but below the 144px commit threshold — no tick.
+    firePointer(card, "pointermove", { x: 120, t: 150 });
+    expect(hapticsMock.hapticSwipeArmed).not.toHaveBeenCalled();
+    // dx −160: the crossing fires exactly one tick…
+    firePointer(card, "pointermove", { x: 40, t: 300 });
+    expect(hapticsMock.hapticSwipeArmed).toHaveBeenCalledTimes(1);
+    // …and holding past the threshold does not spam.
+    firePointer(card, "pointermove", { x: 30, t: 450 });
+    expect(hapticsMock.hapticSwipeArmed).toHaveBeenCalledTimes(1);
+    // Dropping back below the threshold re-arms; re-crossing ticks again.
+    firePointer(card, "pointermove", { x: 140, t: 600 });
+    expect(hapticsMock.hapticSwipeArmed).toHaveBeenCalledTimes(1);
+    firePointer(card, "pointermove", { x: 40, t: 750 });
+    expect(hapticsMock.hapticSwipeArmed).toHaveBeenCalledTimes(2);
+    firePointer(card, "pointercancel", { x: 40, t: 800 });
+    expect(hapticsMock.hapticSwipeCommit).not.toHaveBeenCalled();
+  });
+
+  it("never ticks during sub-threshold movement, and a spring-back release stays silent", () => {
+    const actions = makeActions();
+    renderRow(makeNote(), actions);
+    const card = cardEl();
+
+    slowDrag(card, -60);
+    firePointer(card, "pointerup", { x: 140, t: 700 });
+    expect(hapticsMock.hapticSwipeArmed).not.toHaveBeenCalled();
+    expect(hapticsMock.hapticSwipeCommit).not.toHaveBeenCalled();
+  });
+
+  it("fires the trash commit haptic at release, before the slide-off dispatch lands", async () => {
+    const actions = makeActions();
+    renderRow(makeNote(), actions);
+    const card = cardEl();
+
+    slowDrag(card, -160);
+    firePointer(card, "pointerup", { x: 40, t: 700 });
+    // The buzz belongs to the release: it has already fired while the
+    // action itself still waits for the slide-off animation.
+    expect(hapticsMock.hapticSwipeCommit).toHaveBeenCalledTimes(1);
+    expect(hapticsMock.hapticSwipeCommit).toHaveBeenCalledWith("trash");
+    expect(actions.trash).not.toHaveBeenCalled();
+    await sleep(240);
+    expect(actions.trash).toHaveBeenCalledTimes(1);
+    expect(hapticsMock.hapticSwipeCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it("fires the pin commit haptic at release on a right swipe", () => {
+    const actions = makeActions();
+    renderRow(makeNote(), actions);
+    const card = cardEl();
+
+    slowDrag(card, 160);
+    firePointer(card, "pointerup", { x: 360, t: 700 });
+    expect(hapticsMock.hapticSwipeCommit).toHaveBeenCalledTimes(1);
+    expect(hapticsMock.hapticSwipeCommit).toHaveBeenCalledWith("pin");
+    expect(actions.togglePin).toHaveBeenCalledTimes(1);
   });
 });
