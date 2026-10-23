@@ -7,6 +7,7 @@ import { useSettings } from "@/hooks/use-noma";
 import { useAuth } from "@/lib/noma/auth";
 import { applyTheme } from "@/lib/noma/theme";
 import { syncSystemBarsToTheme } from "@/lib/noma/system-bars";
+import { setHapticsEnabled } from "@/lib/noma/haptics";
 import { useAppLock } from "@/lib/noma/AppLockContext";
 import { LockScreen } from "./lock-screen";
 
@@ -35,6 +36,14 @@ export function AppGate({ children }: { children: ReactNode }) {
     media.addEventListener("change", onChange);
     return () => media.removeEventListener("change", onChange);
   }, [settings.theme, ready]);
+
+  // Haptic feedback follows the stored preference (native-feel #4): the
+  // haptics bridge is gated on a module-level mirror, so the Settings
+  // toggle takes effect immediately, with no reload.
+  useEffect(() => {
+    if (!ready) return;
+    setHapticsEnabled(settings.hapticsEnabled);
+  }, [settings.hapticsEnabled, ready]);
 
   if (auth.configured && auth.loading) {
     return <BootScreen />;

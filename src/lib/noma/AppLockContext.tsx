@@ -20,6 +20,7 @@ import {
   verifySecret,
   type BiometricCheckResult,
 } from "./app-lock-crypto";
+import { hapticUnlockFailure, hapticUnlockSuccess } from "./haptics";
 
 export interface AppLockContextValue {
   isLocked: boolean;
@@ -202,7 +203,14 @@ export function AppLockProvider({ children }: { children: ReactNode }) {
     };
   }, [ready, settings.appLockEnabled, settings.lockTimeout]);
 
+  // Every credential path funnels through these two functions —
+  // password, pattern, biometric unlock, and settings-change
+  // verification — so the unlock haptics (native-feel #4) wired here
+  // fire exactly once per attempt outcome, biometric included. A
+  // lockout-blocked attempt returns before reaching either funnel and
+  // stays silent, as does a dismissed biometric prompt.
   const handleFailedAttempt = useCallback(async () => {
+    hapticUnlockFailure();
     const nextAttempts = (settings.failedAttempts || 0) + 1;
     const durationMs = getLockoutDurationMs(nextAttempts);
     const lockoutUntil = durationMs > 0 ? Date.now() + durationMs : null;
@@ -214,6 +222,7 @@ export function AppLockProvider({ children }: { children: ReactNode }) {
   }, [settings.failedAttempts, update]);
 
   const handleSuccessfulAttempt = useCallback(async () => {
+    hapticUnlockSuccess();
     if (settings.failedAttempts > 0 || settings.lockoutUntil !== null) {
       await update({
         failedAttempts: 0,

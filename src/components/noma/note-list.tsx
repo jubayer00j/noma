@@ -47,6 +47,7 @@ import {
   type SwipeActionKind,
   type SwipeGesture,
 } from "@/lib/noma/swipe";
+import { hapticSwipeArmed, hapticSwipeCommit } from "@/lib/noma/haptics";
 import type { LucideIcon } from "lucide-react";
 import { VirtualList } from "./virtual-list";
 import { NotesListSurfaceContext } from "./notes-list-surface-context";
@@ -190,6 +191,10 @@ const NoteItem = memo(function NoteItem({
   const [swipeAnimating, setSwipeAnimating] = useState(false);
   const [rowWidth, setRowWidth] = useState(0);
   const gestureRef = useRef<SwipeGesture>(idleSwipeGesture);
+  // Last armed state seen during this drag (native-feel #4): the tick
+  // fires on the false→true crossing only, and resets with the gesture
+  // so re-crossing after dropping back ticks again.
+  const swipeArmedRef = useRef(false);
   const rowWidthRef = useRef(0);
   const suppressClickRef = useRef(false);
   const capturedPointerRef = useRef<number | null>(null);
@@ -229,6 +234,7 @@ const NoteItem = memo(function NoteItem({
     pending?.();
     suppressClickRef.current = false;
     gestureRef.current = idleSwipeGesture;
+    swipeArmedRef.current = false;
     capturedPointerRef.current = null;
     setSwipeAnimating(false);
     setDragX(0);
@@ -255,6 +261,7 @@ const NoteItem = memo(function NoteItem({
     });
     if (next === gestureRef.current) return;
     gestureRef.current = next;
+    swipeArmedRef.current = false;
     rowWidthRef.current = e.currentTarget.clientWidth;
     setRowWidth(e.currentTarget.clientWidth);
     setSwipeAnimating(false);
@@ -282,6 +289,11 @@ const NoteItem = memo(function NoteItem({
         }
       }
       setDragX(next.dx);
+      // Haptic tick on the armed crossing only (native-feel #4): the
+      // finger learns "release now = action" without watching the row.
+      const armed = swipeWouldCommit(next, swipeMap, rowWidthRef.current);
+      if (armed && !swipeArmedRef.current) hapticSwipeArmed();
+      swipeArmedRef.current = armed;
     }
   };
 
@@ -301,9 +313,15 @@ const NoteItem = memo(function NoteItem({
     releaseSwipeCapture(e);
     const { gesture, release } = swipePointerUp(g, swipeMap, rowWidthRef.current);
     gestureRef.current = gesture;
+    swipeArmedRef.current = false;
     if (release.type === "tap") return;
     // Whatever happens next, the click trailing this drag is not an "open".
     suppressClickRef.current = true;
+    // The commit buzz belongs to the release, not the slide-off
+    // dispatch 180ms later — the finger is the audience (native-feel
+    // #4). deleteForever maps to silence in haptics.ts: its swipe only
+    // opens the confirmation dialog, nothing has been deleted.
+    if (release.type === "commit") hapticSwipeCommit(release.action);
     if (release.type === "commit" && (release.action === "trash" || release.action === "restore")) {
       // The note leaves this view: slide the card the rest of the way
       // out, then fire. The machine's committed state plus the stored
@@ -336,6 +354,7 @@ const NoteItem = memo(function NoteItem({
     const g = gestureRef.current;
     if (g.pointerId !== e.pointerId) return;
     gestureRef.current = swipePointerCancel(g);
+    swipeArmedRef.current = false;
     capturedPointerRef.current = null;
     if (g.phase === "dragging") {
       // The browser took the gesture for scrolling; the trailing click of

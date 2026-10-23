@@ -11,6 +11,7 @@ import {
   type UnlockedNoteData,
 } from "@/lib/noma/note-lock";
 import { hasBiometricCopy } from "@/lib/noma/note-lock-crypto";
+import { hapticUnlockFailure, hapticUnlockSuccess } from "@/lib/noma/haptics";
 import { noteTitle } from "@/lib/noma/notes";
 import type { Note, NoteLockMethod } from "@/lib/noma/types";
 
@@ -45,10 +46,18 @@ export function NoteLockGate({ note, onUnlocked }: NoteLockGateProps) {
 
   if (!lock || !db) return null;
 
+  // Unlock haptics (native-feel #4) fire here, once per attempt
+  // outcome: success on either path, failure on a rejected credential
+  // or an unusable biometric copy. A dismissed OS biometric prompt is
+  // a cancel, not a wrong credential, and stays silent.
   const handleVerify = async (method: NoteLockMethod, secret: string | number[]) => {
     const result = await verifyNoteCredential(db, note, method, secret);
-    if (!result.ok) return { success: false, error: result.error };
+    if (!result.ok) {
+      hapticUnlockFailure();
+      return { success: false, error: result.error };
+    }
     const data = await decryptNoteData(db, note, result.nek);
+    hapticUnlockSuccess();
     onUnlocked(result.nek, data);
     return { success: true };
   };
@@ -61,10 +70,12 @@ export function NoteLockGate({ note, onUnlocked }: NoteLockGateProps) {
     }
     const result = await unlockNoteWithBiometricCopy(db, note);
     if (!result.ok) {
+      hapticUnlockFailure();
       toast.error(result.error);
       return false;
     }
     const data = await decryptNoteData(db, note, result.nek);
+    hapticUnlockSuccess();
     onUnlocked(result.nek, data);
     return true;
   };
