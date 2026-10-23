@@ -1,6 +1,20 @@
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { googleDriveClientId } from "../firebase";
-import { buildBackupZip, readBackupZip, recordBackup, type BackupPayload } from "./backup";
+import {
+  BackupKeyNeededError,
+  clearBackupEncryptionRecord,
+  getBackupDeviceKey,
+  getBackupEncryptionRecord,
+  parseHeader,
+  type BackupEncryptionHeader,
+} from "./backup-crypto";
+import {
+  buildBackupZip,
+  readBackupArchive,
+  readBackupZip,
+  recordBackup,
+  type BackupPayload,
+} from "./backup";
 import type { BackupManifest } from "./types";
 
 /** Narrowest scope that still lets Noma manage only the files it creates. */
@@ -518,6 +532,11 @@ export async function disconnectDrive(ownerId: string | null): Promise<void> {
   accessToken = null;
   tokenExpiresAt = 0;
   setConnection(ownerId, null);
+  // The backup-encryption record is keyed to this account: disconnecting
+  // clears it, and sign-out routes through this same function (auth.tsx),
+  // so both paths are covered — a different account connecting later
+  // never inherits this account's wrap state.
+  clearBackupEncryptionRecord(ownerId);
 }
 
 export async function listDriveBackups(ownerId: string | null): Promise<DriveBackupFile[]> {
@@ -567,6 +586,17 @@ export async function backupNow(
 
   const backupPromise = (async () => {
     try {
+      // Encryption is enabled but this device holds no key: fail with the
+      // typed needs-unlock error so callers can prompt for the passphrase.
+      // Never fall back to writing a plaintext archive (buildBackupZip
+      // enforces the same when reached directly).
+      const encryptionRecord = getBackupEncryptionRecord(ownerId);
+      if (encryptionRecord && !getBackupDeviceKey(ownerId)) {
+        throw new BackupKeyNeededError(
+          "Backup encryption is on, but this device doesn't hold the key. Enter your backup passphrase to continue.",
+          encryptionRecord,
+        );
+      }
       const token = await authorize(ownerId);
       const folderId = await ensureFolder(token, ownerId);
       const existingFileId = await resolveCanonicalFileId(token, folderId, ownerId);
@@ -729,7 +759,7 @@ export async function fetchDriveBackup(
 ): Promise<BackupPayload> {
   const token = await authorize(ownerId);
   const response = await driveFetch(`drive/v3/files/${fileId}?alt=media`, token);
-  return readBackupZip(await response.blob(), ownerId);
+  return readBackupZip(await response.blob(), ownerId, getBackupDeviceKey(ownerId));
 }
 
 export interface CanonicalFileMeta {
@@ -770,9 +800,16 @@ export async function getCanonicalFileMeta(
 }
 
 /** Downloads and parses the canonical backup, together with its metadata. */
+export interface CanonicalBackupFetch {
+  payload: BackupPayload;
+  meta: CanonicalFileMeta;
+  /** Wrap parameters of the archive, or null when it is plaintext. */
+  encryption: BackupEncryptionHeader | null;
+}
+
 export async function fetchCanonicalBackup(
   ownerId: string | null,
-): Promise<{ payload: BackupPayload; meta: CanonicalFileMeta } | null> {
+): Promise<CanonicalBackupFetch | null> {
   const token = await authorize(ownerId);
   const folderId = await ensureFolder(token, ownerId);
   const fileId = await resolveCanonicalFileId(token, folderId, ownerId);
@@ -794,8 +831,30 @@ export async function fetchCanonicalBackup(
     size: data.size ? Number(data.size) : null,
   };
   const response = await driveFetch(`drive/v3/files/${fileId}?alt=media`, token);
-  const payload = await readBackupZip(await response.blob(), ownerId);
-  return { payload, meta };
+  const { payload, encryption } = await readBackupArchive(
+    await response.blob(),
+    ownerId,
+    getBackupDeviceKey(ownerId),
+  );
+  return { payload, meta, encryption };
+}
+
+/**
+ * The encryption header of the canonical archive, without decrypting it
+ * — used by the unlock prompt on a device that has no local record yet
+ * (e.g. a second device joining an encrypted fleet). Returns null when
+ * there is no canonical file or it is plaintext.
+ */
+export async function getCanonicalEncryptionHeader(
+  ownerId: string | null,
+): Promise<BackupEncryptionHeader | null> {
+  const token = await authorize(ownerId);
+  const folderId = await ensureFolder(token, ownerId);
+  const fileId = await resolveCanonicalFileId(token, folderId, ownerId);
+  if (!fileId) return null;
+  const response = await driveFetch(`drive/v3/files/${fileId}?alt=media`, token);
+  const bytes = new Uint8Array(await (await response.blob()).arrayBuffer());
+  return parseHeader(bytes);
 }
 
 /** Cheap fingerprint of the local library, used to skip redundant uploads. */

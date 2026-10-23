@@ -88,6 +88,13 @@ export interface BackupSchedulerState {
   lastBackupAt: number | null;
   /** Scheduled mode only: when the next backup becomes due (null = due now / never backed up). */
   nextDueAt: number | null;
+  /**
+   * True when the last cycle ended `locked` — the remote archive is
+   * encrypted and this device holds no key. A quiet paused state (like
+   * offline), not an error: Settings shows the resume line and the user
+   * unlocks with the backup passphrase.
+   */
+  syncLocked: boolean;
 }
 
 export interface BackupSchedulerConfig {
@@ -120,6 +127,7 @@ export function startBackupScheduler(deps: BackupSchedulerDeps): () => void {
   let running = false;
   let dirty = false;
   let pending = false;
+  let syncLocked = false;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let stageTimer: ReturnType<typeof setTimeout> | null = null;
   let lastReported = "";
@@ -156,6 +164,7 @@ export function startBackupScheduler(deps: BackupSchedulerDeps): () => void {
       mode,
       pendingChanges: pending,
       lastBackupAt: connection?.lastBackupAt ?? null,
+      syncLocked,
       nextDueAt:
         mode === "scheduled"
           ? nextScheduledBackupAt(connection?.lastBackupAt ?? null, intervalMinutes)
@@ -174,6 +183,7 @@ export function startBackupScheduler(deps: BackupSchedulerDeps): () => void {
     if (mode === "off") return;
     if (!getConnection(ownerId)) {
       pending = false;
+      syncLocked = false;
       report();
       return;
     }
@@ -198,7 +208,11 @@ export function startBackupScheduler(deps: BackupSchedulerDeps): () => void {
         }
         const result = await syncNow(db, ownerId, reason);
         dirty = false;
-        pending = result.status === "failed";
+        // A `locked` cycle is a quiet skip, not a failure: the changes
+        // are still unbacked (pending), but nothing retries harder or
+        // surfaces an error — the next normal trigger tries again.
+        syncLocked = result.status === "locked";
+        pending = result.status === "failed" || result.status === "locked";
         return;
       }
       // Sync mode: a full pull-merge-push cycle. Merge-applied writes
@@ -208,9 +222,16 @@ export function startBackupScheduler(deps: BackupSchedulerDeps): () => void {
       if (result.status === "synced") {
         dirty = false;
         pending = false;
+        syncLocked = false;
       } else if (result.status === "failed") {
         // Failures stay pending and the next trigger retries.
         pending = true;
+        syncLocked = false;
+      } else if (result.status === "locked") {
+        // Encrypted remote, no key on this device: stay pending and
+        // quiet until the user unlocks from Settings.
+        pending = dirty;
+        syncLocked = true;
       } else {
         pending = dirty;
       }
