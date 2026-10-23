@@ -12,6 +12,7 @@ import {
   wrapNoteKey,
 } from "./note-lock-crypto";
 import { countWords } from "./sanitize";
+import { clearVersions } from "./versions";
 import type { Note, NoteLock, NoteLockMethod } from "./types";
 
 export const NOTE_LOCK_METHOD_LABEL: Record<NoteLockMethod, string> = {
@@ -104,6 +105,11 @@ export async function lockNote(
     wordCount,
     updatedAt: Date.now(),
   });
+
+  // Version history is stored in the note's own (plaintext) storage
+  // form — keeping it would defeat the seal. Locking purges it, and no
+  // new snapshots are taken while the note stays locked (versions.ts).
+  await clearVersions(db, noteId);
 
   const updated = await db.notes.get(noteId);
   if (!updated) throw new Error("Note not found after locking.");

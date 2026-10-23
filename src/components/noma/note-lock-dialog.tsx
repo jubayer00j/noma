@@ -333,7 +333,8 @@ export function NoteLockDialog({ note, mode, nek, onClose, onLocked, onLockRemov
               <p className="text-xs leading-relaxed">
                 <strong>No recovery.</strong> This note will be encrypted for real. If you forget
                 this credential, the note can <strong>never</strong> be opened again — there is no
-                reset. Backups keep it locked with the same credential.
+                reset. Backups keep it locked with the same credential. Locking clears this
+                note&apos;s version history.
               </p>
             </div>
 

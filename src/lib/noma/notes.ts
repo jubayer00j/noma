@@ -3,6 +3,7 @@ import { cancelNotification, scheduleNotification } from "./notifications";
 import { countWords, htmlToPlainText, sanitizeHtml } from "./sanitize";
 import { cleanupOrphanedAttachments } from "./media";
 import { recordTombstone } from "./sync";
+import { clearVersions, snapshotIfSettled } from "./versions";
 import type {
   AlarmToneMode,
   Folder,
@@ -46,6 +47,21 @@ export async function updateNote(
   if (typeof patch.content === "string") {
     next.content = sanitizeHtml(patch.content);
     next.wordCount = countWords(next.content);
+  }
+  // Version history (see versions.ts): when the patch touches title or
+  // content, snapshot the stored state first — but only if it actually
+  // differs from what the patch will write, compared like-for-like
+  // against the sanitised values in `next`. The snapshot itself applies
+  // the settled-state rule and never fires for a locked note (the
+  // stored record carries the lock), so no ciphertext is ever copied
+  // into a version. Flag-only patches skip the extra read entirely.
+  if (patch.title !== undefined || patch.content !== undefined) {
+    const stored = await db.notes.get(id);
+    if (stored) {
+      const titleChanged = (next.title ?? stored.title) !== stored.title;
+      const contentChanged = (next.content ?? stored.content) !== stored.content;
+      if (titleChanged || contentChanged) await snapshotIfSettled(db, stored);
+    }
   }
   await db.notes.update(id, next);
 }
@@ -141,9 +157,12 @@ export async function deleteNoteForever(db: NomaDatabase, id: string): Promise<v
     await cancelNotification(reminder.id, reminder.notificationId);
   }
 
-  await db.transaction("rw", db.notes, db.attachments, db.reminders, async () => {
+  await db.transaction("rw", db.notes, db.attachments, db.reminders, db.noteVersions, async () => {
     await db.attachments.where("noteId").equals(id).delete();
     await db.reminders.where("noteId").equals(id).delete();
+    // Permanent deletion purges the note's version history with it
+    // (soft-delete/trash keeps history — a restored note keeps its past).
+    await clearVersions(db, id);
     await db.notes.delete(id);
   });
 
