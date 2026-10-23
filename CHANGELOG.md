@@ -78,9 +78,15 @@ Ten items to make the Android app feel native, worked in order. (The roadmap abo
 - Every shell respects the safe-area insets — workspace, sidebar, Settings, the lock screen, sheets and drawers — so nothing hides under the bars or the gesture pill. Verified in the built CSS cascade, not just written.
 - Bar icon contrast follows the in-app theme (light/nature → dark icons, dark/AMOLED → light icons, "system" flips live with the OS), driven through the official StatusBar plugin — pinned to transparent with no overlay in config, so its load-time defaults can't fight the design.
 
+### Swipe actions + undo — PR #73
+- Note rows answer the two native gestures: swipe **left** to Move to Trash (the existing Undo toast comes with it, free), swipe **right** to Pin or Unpin — a visible toggle, so deliberately no toast. In Trash, right restores, and left only *opens* the delete-permanently confirmation — a gesture can never fire the one irreversible action directly. Templates keep only the trash swipe; pinning a template means nothing.
+- Touch pointers only (a mouse drag can never fling a note), vertical scrolling is never hijacked, and only the card moves — the row's measured height never shifts, so the virtualized list stays calm. Every swipe calls the same action the ⋮ menu does; no new write paths.
+- Fallout fix from #71: the bottom-centre toast (Undo included) now also clears the gesture-bar inset on edge-to-edge devices — sonner's offsets had no safe-area awareness, so the toast could sit under the gesture pill.
+
 ### Device-only proofs
 - Back from Settings returns to the workspace every time; back with a menu or dialog open closes it first; back at the lock screen minimizes and reveals nothing; predictive-back preview on Android 13+.
 - **Edge-to-edge (#71):** bars stay transparent in every theme; headers clear the status bar; sheets and drawers clear the gesture area; cutout insets in landscape.
+- **Swipe actions (#73):** swipe feel in the Android WebView; vertical scroll never hijacked; tap still opens; half-swiped rows reset on scroll; Undo toast reachable and tappable above the gesture bar; trash-view left swipe opens the confirm dialog; locked-note swipe round-trip.
 
 ## 2026-10-22
 

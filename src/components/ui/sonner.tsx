@@ -6,6 +6,14 @@ const Toaster = ({ ...props }: ToasterProps) => {
   return (
     <Sonner
       className="toaster group"
+      // Edge-to-edge (native-feel #2) draws the app under the gesture
+      // bar, and sonner has no safe-area awareness: its default bottom
+      // offsets (24px desktop / 16px mobile) can leave a toast — and its
+      // Undo action — under the gesture bar. Keep the defaults as the
+      // floor, but never less than the bottom inset. Object form: every
+      // other side keeps sonner's default.
+      offset={{ bottom: "max(24px, env(safe-area-inset-bottom, 0px))" }}
+      mobileOffset={{ bottom: "max(16px, env(safe-area-inset-bottom, 0px))" }}
       toastOptions={{
         classNames: {
           toast:
