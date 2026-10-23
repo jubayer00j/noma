@@ -5,8 +5,22 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useRegisteredOverlayRoot } from "@/lib/noma/overlay-registry";
 
-const Dialog = DialogPrimitive.Root;
+/**
+ * Root wrapper: registers the dialog in the overlay registry while
+ * open so the system-back coordinator can dismiss it (see
+ * overlay-registry.ts). Consumer props and behaviour are unchanged.
+ */
+const Dialog = ({
+  open,
+  defaultOpen,
+  onOpenChange,
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Root>) => {
+  const root = useRegisteredOverlayRoot({ open, defaultOpen, onOpenChange });
+  return <DialogPrimitive.Root {...props} open={root.open} onOpenChange={root.onOpenChange} />;
+};
 
 const DialogTrigger = DialogPrimitive.Trigger;
 

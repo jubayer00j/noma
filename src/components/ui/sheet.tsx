@@ -6,8 +6,22 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useRegisteredOverlayRoot } from "@/lib/noma/overlay-registry";
 
-const Sheet = SheetPrimitive.Root;
+/**
+ * Root wrapper: registers the sheet in the overlay registry while
+ * open so the system-back coordinator can dismiss it (see
+ * overlay-registry.ts). Consumer props and behaviour are unchanged.
+ */
+const Sheet = ({
+  open,
+  defaultOpen,
+  onOpenChange,
+  ...props
+}: React.ComponentProps<typeof SheetPrimitive.Root>) => {
+  const root = useRegisteredOverlayRoot({ open, defaultOpen, onOpenChange });
+  return <SheetPrimitive.Root {...props} open={root.open} onOpenChange={root.onOpenChange} />;
+};
 
 const SheetTrigger = SheetPrimitive.Trigger;
 

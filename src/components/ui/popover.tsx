@@ -2,8 +2,22 @@ import * as React from "react";
 import * as PopoverPrimitive from "@radix-ui/react-popover";
 
 import { cn } from "@/lib/utils";
+import { useRegisteredOverlayRoot } from "@/lib/noma/overlay-registry";
 
-const Popover = PopoverPrimitive.Root;
+/**
+ * Root wrapper: registers the popover in the overlay registry while
+ * open so the system-back coordinator can dismiss it (see
+ * overlay-registry.ts). Consumer props and behaviour are unchanged.
+ */
+const Popover = ({
+  open,
+  defaultOpen,
+  onOpenChange,
+  ...props
+}: React.ComponentProps<typeof PopoverPrimitive.Root>) => {
+  const root = useRegisteredOverlayRoot({ open, defaultOpen, onOpenChange });
+  return <PopoverPrimitive.Root {...props} open={root.open} onOpenChange={root.onOpenChange} />;
+};
 
 const PopoverTrigger = PopoverPrimitive.Trigger;
 
