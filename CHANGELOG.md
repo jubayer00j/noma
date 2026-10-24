@@ -2,6 +2,14 @@
 
 All notable changes to Noma. Dates are merge dates on `main`.
 
+## 2026-10-24
+
+### Settings restructure — PR #81
+- Settings is no longer one long scroll. It opens on a list of eight categories — **Sync & backup, Security, Appearance, Writing, AI features, Data, Account, About** — and every row shows its current state as a summary ("Connected · Scheduled · Daily", "App lock on · Encryption off", your theme's name, "17px · 1.7"), so most visits end at a glance. Tapping a row opens its sub-screen; the header and the Android back button walk you back to the list first (a new step in the system-back priority: dialogs → sub-screen → leave Settings).
+- Everything is the same blocks, rehomed — nothing about how any setting behaves has changed. Backup encryption moved out of the Drive card into **Security**, next to App Lock where it belongs; enabling it there still seals the current Drive backup immediately, via the same window-event idiom the cards already used to talk to each other. Restore and the importers live under **Data**; the writing sliders got their own **Writing** screen, out of Appearance.
+- Two long-standing nits fixed on the way through: the backup description no longer claims backups contain Markdown (they're JSON and attachments — Markdown is an import format), and settings.tsx got the full formatting pass its diffs had been politely avoiding.
+- Device-only proof: open Settings and check every row's summary against the real state (flip backup mode, theme, App Lock and watch them follow); hardware back walks sub-screen → list → Notes; export, restore, an import, Drive connect, enabling encryption (Drive archive seals right away), saving the AI key, and signing out all work from their new homes.
+
 ## 2026-10-23 — the 8-feature roadmap
 
 One sprint, eight features, each spec-first, PR-reviewed and production-verified. Noma went from a local notes app to a synced, encrypted, importing, AI-capable one — still ~$0 to run.

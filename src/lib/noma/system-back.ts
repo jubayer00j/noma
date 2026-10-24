@@ -19,10 +19,14 @@
  *    a dead button.
  * 3. The sign-in route — minimize (there is nowhere in-app to go back
  *    to, and leaving must not drop the user into the workspace).
- * 4. A workspace route (`/` or `/app`) — the chain the workspace
+ * 4. The Settings route with a sub-screen open (settings restructure)
+ *    — close the sub-screen, back to the Settings root list. Dialogs
+ *    opened from a sub-screen are overlays, so layer 1 has already
+ *    claimed those presses and revealed the sub-screen underneath.
+ * 5. A workspace route (`/` or `/app`) — the chain the workspace
  *    registered (dialogs, search, editor, note). If the chain does
  *    not consume, fall through to minimize.
- * 5. Any other route (`/settings`, `/account`, `/share-target`, …) —
+ * 6. Any other route (`/settings`, `/account`, `/share-target`, …) —
  *    navigate to the workspace route through the router (never
  *    WebView history, which could land on a stale page).
  *
@@ -56,10 +60,16 @@ export interface SystemBackEnvironment {
   locked: boolean;
   /** Current route pathname from the router. */
   pathname: string;
+  /**
+   * The Settings route has a sub-screen open (settings restructure).
+   * Only meaningful on `/settings`; read live from the registration
+   * slot below by the mount, like the overlay state.
+   */
+  settingsSubScreenOpen?: boolean;
 }
 
 export type SystemBackAction =
-  "dismiss-overlay" | "minimize" | "navigate-workspace" | "workspace-chain";
+  "dismiss-overlay" | "minimize" | "navigate-workspace" | "workspace-chain" | "settings-sub-screen";
 
 /**
  * Pure priority resolution for one back press. Side effects live in
@@ -76,6 +86,7 @@ export function resolveSystemBackAction(env: SystemBackEnvironment): SystemBackA
   if (env.locked) return "minimize";
   const pathname = normalizePathname(env.pathname);
   if (pathname === "/signin") return "minimize";
+  if (pathname === "/settings" && env.settingsSubScreenOpen) return "settings-sub-screen";
   if (WORKSPACE_ROUTES.has(pathname)) return "workspace-chain";
   return "navigate-workspace";
 }
@@ -103,6 +114,36 @@ export function registerWorkspaceBackHandler(handler: WorkspaceBackHandler): () 
 /** The currently registered workspace chain, if any (tests/diagnostics). */
 export function getWorkspaceBackHandler(): WorkspaceBackHandler | null {
   return workspaceBackHandler;
+}
+
+/* ---------------- Settings sub-screen registration ---------------- */
+
+/**
+ * The Settings page registers a handler while one of its sub-screens
+ * is open (settings restructure); the handler closes the sub-screen
+ * and returns true. Same single-slot discipline as the workspace
+ * chain: exactly one Settings page is mounted at a time, and
+ * unregistering clears only the caller's own handler.
+ */
+export type SettingsBackHandler = () => boolean;
+
+let settingsBackHandler: SettingsBackHandler | null = null;
+
+export function registerSettingsBackHandler(handler: SettingsBackHandler): () => void {
+  settingsBackHandler = handler;
+  return () => {
+    if (settingsBackHandler === handler) settingsBackHandler = null;
+  };
+}
+
+/** The currently registered Settings sub-screen handler, if any (tests/diagnostics). */
+export function getSettingsBackHandler(): SettingsBackHandler | null {
+  return settingsBackHandler;
+}
+
+/** Whether a Settings sub-screen is currently open (the mount's live read). */
+export function hasSettingsSubScreen(): boolean {
+  return settingsBackHandler !== null;
 }
 
 /* ---------------- Press execution ---------------- */
@@ -138,6 +179,11 @@ export function handleSystemBackPress(
     case "workspace-chain": {
       const consumed = workspaceBackHandler?.() ?? false;
       if (!consumed) effects.minimizeApp();
+      break;
+    }
+    case "settings-sub-screen": {
+      const consumed = settingsBackHandler?.() ?? false;
+      if (!consumed) effects.navigateToWorkspace();
       break;
     }
   }
