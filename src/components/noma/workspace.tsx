@@ -68,7 +68,7 @@ import { aiActionsAvailable, getAiSettings, type AiSettings } from "@/lib/noma/a
 import { AiDialog, type AiDialogMode } from "./ai-dialog";
 import { AI_SETTINGS_CHANGED_EVENT } from "./ai-section";
 import { useAppLock } from "@/lib/noma/AppLockContext";
-import { usePendingShortcut } from "@/lib/noma/shortcut";
+import { useShortcutConsumption } from "@/lib/noma/shortcut";
 import { registerWorkspaceBackHandler, resolveWorkspaceBackStep } from "@/lib/noma/system-back";
 import { usePendingCapture, type CaptureRequest } from "@/lib/noma/capture";
 import { findNoteToOpen, usePendingNoteOpen } from "@/lib/noma/notification-open";
@@ -616,7 +616,6 @@ export function Workspace() {
   const { settings, update: updateSettings } = useSettings();
   const online = useOnline();
   const { isLocked, isLockStateResolving } = useAppLock();
-  const { action: shortcutAction, consumeShortcut } = usePendingShortcut();
   const { request: captureRequest, consumeCapture } = usePendingCapture();
   const { request: noteOpenRequest, consume: consumeNoteOpen } = usePendingNoteOpen();
 
@@ -917,13 +916,15 @@ export function Workspace() {
     [db],
   );
 
-  // Respond to Android shortcut triggers once DB is loaded and App Lock is unlocked
-  useEffect(() => {
-    if (shortcutAction === "new-note" && db && !isLockStateResolving && !isLocked) {
-      consumeShortcut();
-      void handleNewNote();
-    }
-  }, [shortcutAction, db, isLockStateResolving, isLocked, consumeShortcut, handleNewNote]);
+  // Respond to launcher shortcut triggers once DB is loaded and App Lock
+  // is unlocked — the gate and consume-once semantics live in shortcut.ts.
+  useShortcutConsumption({
+    db,
+    isLockStateResolving,
+    isLocked,
+    onNewNote: handleNewNote,
+    onToday: openTodayNote,
+  });
 
   // Consume quick-capture requests (share target, widget, tile, PWA doors)
   // under the same gate as the launcher shortcut: DB loaded, App Lock open.
