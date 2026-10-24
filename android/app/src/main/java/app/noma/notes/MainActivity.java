@@ -100,6 +100,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(NomaAlarmPlugin.class);
         registerPlugin(NomaBackgroundBackupPlugin.class);
         registerPlugin(NomaSharePlugin.class);
+        registerPlugin(NomaWidgetPlugin.class);
 
         SplashScreen splashScreen = SplashScreen.installSplashScreen(this);
         splashScreen.setOnExitAnimationListener(provider -> {

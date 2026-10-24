@@ -253,6 +253,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (current) {
           const { disconnectDrive } = await import("./drive");
           await disconnectDrive(current.uid);
+          // The widget's staged snapshot belongs to this account: clear
+          // it on sign-out (native-feel #10), in the same pass that
+          // clears the Drive/AI device records — a different account
+          // signing in later never inherits these titles on the home
+          // screen. Fire-and-forget and failure-proof inside the module.
+          const { clearWidgetSnapshot } = await import("./widget-snapshot");
+          clearWidgetSnapshot();
         }
         await fbSignOut(requireAuth());
       },
