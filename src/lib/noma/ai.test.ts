@@ -399,8 +399,7 @@ describe("Gemini client", () => {
       { name: "400", handler: () => statusResponse(400), kind: "invalid-key" },
       { name: "401", handler: () => statusResponse(401), kind: "invalid-key" },
       { name: "403", handler: () => statusResponse(403), kind: "invalid-key" },
-      { name: "500", handler: () => statusResponse(500), kind: "bad-response" },
-      { name: "404", handler: () => statusResponse(404), kind: "bad-response" },
+      { name: "500", handler: () => statusResponse(500), kind: "transient" },
       {
         name: "malformed JSON body",
         handler: () => new Response("{oops", { status: 200 }),
@@ -440,6 +439,68 @@ describe("Gemini client", () => {
     expect((error as AiError).kind).toBe("empty");
     expect((error as AiError).message).toContain("no text");
     expect(calls).toHaveLength(0);
+  });
+
+  it("surfaces Google's real error instead of the generic line", async () => {
+    const errorEnvelope = (status: number, message: string): Response =>
+      new Response(JSON.stringify({ error: { code: status, message, status: "FAILED" } }), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    // 404 names the configured model, so a retired model id is diagnosable.
+    stubFetch(() => errorEnvelope(404, "models/gemini-2.5-flash is not found."));
+    const notFound = await testAiConnection(API_KEY).catch((e: unknown) => e);
+    expect((notFound as AiError).kind).toBe("model-unavailable");
+    expect((notFound as AiError).message).toContain(GEMINI_MODEL);
+
+    // …and the per-record override, not the pinned default.
+    stubFetch(() => errorEnvelope(404, "not found"));
+    const customModel = await testAiConnection(API_KEY, {
+      enabled: true,
+      apiKey: API_KEY,
+      model: "custom-model",
+    }).catch((e: unknown) => e);
+    expect((customModel as AiError).kind).toBe("model-unavailable");
+    expect((customModel as AiError).message).toContain("custom-model");
+
+    // 502/503 are transient, whatever the envelope says.
+    for (const status of [502, 503]) {
+      stubFetch(() => errorEnvelope(status, "The model is overloaded."));
+      const busy = await testAiConnection(API_KEY).catch((e: unknown) => e);
+      expect((busy as AiError).kind).toBe("transient");
+      expect((busy as AiError).message).toBe(AI_ERROR_MESSAGES["transient"]);
+    }
+
+    // Unmapped statuses surface Google's message verbatim (capped).
+    stubFetch(() => errorEnvelope(422, "Something specific went wrong."));
+    const apiError = await testAiConnection(API_KEY).catch((e: unknown) => e);
+    expect((apiError as AiError).kind).toBe("api-error");
+    expect((apiError as AiError).message).toContain("Something specific went wrong.");
+
+    // A very long envelope message is capped, never pasted whole.
+    stubFetch(() => errorEnvelope(422, "x".repeat(500)));
+    const capped = await testAiConnection(API_KEY).catch((e: unknown) => e);
+    expect((capped as AiError).kind).toBe("api-error");
+    expect((capped as AiError).message.endsWith("…")).toBe(true);
+    expect((capped as AiError).message.length).toBeLessThan(300);
+
+    // A non-JSON body on an unmapped status falls back to generic, never throws.
+    stubFetch(() => new Response("{oops", { status: 422 }));
+    const nonJson = await testAiConnection(API_KEY).catch((e: unknown) => e);
+    expect((nonJson as AiError).kind).toBe("bad-response");
+    expect((nonJson as AiError).message).toBe(AI_ERROR_MESSAGES["bad-response"]);
+
+    // A JSON body with no error message also falls back to generic.
+    stubFetch(() => new Response(JSON.stringify({}), { status: 422 }));
+    const noMessage = await testAiConnection(API_KEY).catch((e: unknown) => e);
+    expect((noMessage as AiError).kind).toBe("bad-response");
+
+    // A message echoing the key is never surfaced.
+    stubFetch(() => errorEnvelope(422, `bad key ${API_KEY} here`));
+    const keyEcho = await testAiConnection(API_KEY).catch((e: unknown) => e);
+    expect((keyEcho as AiError).kind).toBe("bad-response");
+    expect((keyEcho as AiError).message).not.toContain(API_KEY);
   });
 });
 
