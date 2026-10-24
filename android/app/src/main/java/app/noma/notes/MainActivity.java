@@ -10,6 +10,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
+import java.util.Locale;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import androidx.core.splashscreen.SplashScreen;
@@ -46,6 +47,48 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public void ready() {
             runOnUiThread(MainActivity.this::onSplashReadySignal);
+        }
+    }
+
+    /**
+     * The Material You palette source (native-feel #7). @JavascriptInterface
+     * methods run on a WebView background thread; this one only reads
+     * framework colour resources — thread-safe, no view access — so no
+     * UI-thread marshal is needed. Returns a JSON string the web layer
+     * parses and validates (dynamic-color.ts).
+     *
+     * The four colours are the framework's dynamic tonal palettes
+     * (API 31+): system_accent1 at index 600 / 200 — Material's tone 40
+     * (light primary) and tone 80 (dark primary) steps — and
+     * system_accent2 at index 100 / 700 — tone 90 / 30, the accent
+     * surface steps. The android.R.color constants are inlined at
+     * compile time, but the framework resources behind them only exist
+     * on API 31+, hence the version gate: below it the palette is
+     * honestly unavailable and the web layer keeps Noma's own colours.
+     */
+    public class NomaDynamicColorBridge {
+        @JavascriptInterface
+        public String getPaletteJson() {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                return "{\"available\":false}";
+            }
+            try {
+                return "{"
+                        + "\"available\":true,"
+                        + "\"lightPrimary\":\"" + hexColor(android.R.color.system_accent1_600) + "\","
+                        + "\"darkPrimary\":\"" + hexColor(android.R.color.system_accent1_200) + "\","
+                        + "\"lightAccent\":\"" + hexColor(android.R.color.system_accent2_100) + "\","
+                        + "\"darkAccent\":\"" + hexColor(android.R.color.system_accent2_700) + "\""
+                        + "}";
+            } catch (RuntimeException e) {
+                // A framework that advertises API 31 but cannot resolve
+                // the resources degrades to "unavailable", never a crash.
+                return "{\"available\":false}";
+            }
+        }
+
+        private String hexColor(int resId) {
+            return String.format(Locale.US, "#%06X", getColor(resId) & 0xFFFFFF);
         }
     }
 
@@ -114,6 +157,11 @@ public class MainActivity extends BridgeActivity {
         WebView webView = bridge != null ? bridge.getWebView() : null;
         if (webView != null) {
             webView.addJavascriptInterface(new NomaSplashBridge(), "NomaSplash");
+            // Material You palette (native-feel #7): same registration
+            // point, same reasoning as the splash bridge above — the
+            // web layer reads it synchronously from its theme effect
+            // and treats a missing interface as "unavailable".
+            webView.addJavascriptInterface(new NomaDynamicColorBridge(), "NomaDynamicColor");
             // Insurance (review, PR #75): the interface registration
             // above runs in the same UI-thread task that queued the
             // page load — before any script can execute — but it leans

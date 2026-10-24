@@ -7,6 +7,7 @@ import { useSettings } from "@/hooks/use-noma";
 import { useAuth } from "@/lib/noma/auth";
 import { applyTheme } from "@/lib/noma/theme";
 import { syncSystemBarsToTheme } from "@/lib/noma/system-bars";
+import { syncDynamicColor } from "@/lib/noma/dynamic-color";
 import { setHapticsEnabled } from "@/lib/noma/haptics";
 import { signalSplashReady } from "@/lib/noma/splash-handoff";
 import { useAppLock } from "@/lib/noma/AppLockContext";
@@ -22,21 +23,40 @@ export function AppGate({ children }: { children: ReactNode }) {
   const { settings, update, ready } = useSettings();
 
   // Light = light, Dark = dark, System follows the OS and reacts to changes live.
-  // The system-bar icon contrast rides the same signal (native only).
+  // The system-bar icon contrast rides the same signal (native only), and
+  // so does Material You dynamic colour (native-feel #7): when its toggle
+  // is on, the accent family follows the wallpaper palette for whichever
+  // mode the choice resolves to.
   useEffect(() => {
     if (!ready) return;
     const choice = settings.theme;
     applyTheme(choice);
     syncSystemBarsToTheme(choice);
+    syncDynamicColor(choice, settings.dynamicColorEnabled);
     if (choice !== "system") return;
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const onChange = () => {
       applyTheme("system");
       syncSystemBarsToTheme("system");
+      syncDynamicColor("system", settings.dynamicColorEnabled);
     };
     media.addEventListener("change", onChange);
     return () => media.removeEventListener("change", onChange);
-  }, [settings.theme, ready]);
+  }, [settings.theme, settings.dynamicColorEnabled, ready]);
+
+  // Material You (native-feel #7): a wallpaper change while Noma sits in
+  // the background lands on return — re-pull the palette whenever the
+  // app becomes visible again, but only while the toggle is on.
+  useEffect(() => {
+    if (!ready || !settings.dynamicColorEnabled) return;
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        syncDynamicColor(settings.theme, true);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [settings.theme, settings.dynamicColorEnabled, ready]);
 
   // Haptic feedback follows the stored preference (native-feel #4): the
   // haptics bridge is gated on a module-level mirror, so the Settings
