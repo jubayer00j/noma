@@ -33,7 +33,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { applyBackup, type BackupPayload, recordBackup } from "@/lib/noma/backup";
 import { BackupKeyNeededError } from "@/lib/noma/backup-crypto";
-import { BackupEncryptionSection } from "@/components/noma/backup-encryption-section";
 import { BackupUnlockDialog } from "@/components/noma/backup-unlock-dialog";
 import { resetNativeBackupState } from "@/lib/noma/background-backup";
 import {
@@ -302,6 +301,21 @@ export function DriveCard({
   useEffect(() => {
     runBackupRef.current = runBackup;
   }, [runBackup]);
+
+  // Backup encryption now lives under Settings → Security (settings
+  // restructure), but the seal-on-enable behaviour stays here: when a
+  // passphrase is first set up there, it announces "noma:encryption-
+  // enabled" and this card seals the current Drive backup right away,
+  // so the canonical archive becomes the encrypted source of truth
+  // immediately — the exact body the section's old onEncryptionEnabled
+  // callback ran inline when it was rendered below.
+  useEffect(() => {
+    const onEncryptionEnabled = () => {
+      if (getConnection(auth.user?.uid ?? null)) void runBackupRef.current(true);
+    };
+    window.addEventListener("noma:encryption-enabled", onEncryptionEnabled);
+    return () => window.removeEventListener("noma:encryption-enabled", onEncryptionEnabled);
+  }, [auth.user?.uid]);
 
   async function handleConnect() {
     setConnecting(true);
@@ -711,15 +725,6 @@ export function DriveCard({
           )}
         </div>
       )}
-
-      <BackupEncryptionSection
-        ownerId={auth.user?.uid ?? null}
-        onEncryptionEnabled={() => {
-          // Seal the current Drive backup right away so the canonical
-          // archive becomes the encrypted source of truth immediately.
-          if (getConnection(auth.user?.uid ?? null)) void runBackupRef.current(true);
-        }}
-      />
 
       <p className="mt-4 text-xs text-muted-foreground">
         Your notes are stored locally on this device. Google Drive is optional — when connected,

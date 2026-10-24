@@ -7,9 +7,12 @@ import {
   resetOverlayRegistry,
 } from "./overlay-registry";
 import {
+  getSettingsBackHandler,
   getWorkspaceBackHandler,
   handleSystemBackPress,
+  hasSettingsSubScreen,
   isWorkspaceRoute,
+  registerSettingsBackHandler,
   registerWorkspaceBackHandler,
   resolveSystemBackAction,
   resolveWorkspaceBackStep,
@@ -168,6 +171,121 @@ describe("handleSystemBackPress — execution", () => {
     registerWorkspaceBackHandler(second);
     unregisterFirst();
     expect(getWorkspaceBackHandler()).toBe(second);
+  });
+});
+
+describe("settings sub-screen step (settings restructure)", () => {
+  afterEach(() => {
+    registerSettingsBackHandler(() => false)();
+  });
+
+  it("resolves to the sub-screen step on /settings when one is open", () => {
+    expect(
+      resolveSystemBackAction({
+        overlayOpen: false,
+        locked: false,
+        pathname: "/settings",
+        settingsSubScreenOpen: true,
+      }),
+    ).toBe("settings-sub-screen");
+    expect(
+      resolveSystemBackAction({
+        overlayOpen: false,
+        locked: false,
+        pathname: "/settings/",
+        settingsSubScreenOpen: true,
+      }),
+    ).toBe("settings-sub-screen");
+  });
+
+  it("without a sub-screen, /settings still leaves for the workspace", () => {
+    expect(
+      resolveSystemBackAction({
+        overlayOpen: false,
+        locked: false,
+        pathname: "/settings",
+        settingsSubScreenOpen: false,
+      }),
+    ).toBe("navigate-workspace");
+    expect(
+      resolveSystemBackAction({ overlayOpen: false, locked: false, pathname: "/settings" }),
+    ).toBe("navigate-workspace");
+  });
+
+  it("the flag is ignored on other routes", () => {
+    expect(
+      resolveSystemBackAction({
+        overlayOpen: false,
+        locked: false,
+        pathname: "/account",
+        settingsSubScreenOpen: true,
+      }),
+    ).toBe("navigate-workspace");
+    expect(
+      resolveSystemBackAction({
+        overlayOpen: false,
+        locked: false,
+        pathname: "/",
+        settingsSubScreenOpen: true,
+      }),
+    ).toBe("workspace-chain");
+  });
+
+  it("dialog over a sub-screen wins: overlay layer beats the sub-screen step", () => {
+    expect(
+      resolveSystemBackAction({
+        overlayOpen: true,
+        locked: false,
+        pathname: "/settings",
+        settingsSubScreenOpen: true,
+      }),
+    ).toBe("dismiss-overlay");
+  });
+
+  it("the lock layer beats the sub-screen step", () => {
+    expect(
+      resolveSystemBackAction({
+        overlayOpen: false,
+        locked: true,
+        pathname: "/settings",
+        settingsSubScreenOpen: true,
+      }),
+    ).toBe("minimize");
+  });
+
+  it("a press runs the registered handler and navigates nowhere when it consumes", () => {
+    const handler = vi.fn(() => true);
+    registerSettingsBackHandler(handler);
+    const effects = makeEffects();
+    const action = handleSystemBackPress(
+      { overlayOpen: false, locked: false, pathname: "/settings", settingsSubScreenOpen: true },
+      effects,
+    );
+    expect(action).toBe("settings-sub-screen");
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(effects.navigateToWorkspace).not.toHaveBeenCalled();
+    expect(effects.minimizeApp).not.toHaveBeenCalled();
+  });
+
+  it("falls through to navigate-workspace when the handler declines", () => {
+    registerSettingsBackHandler(() => false);
+    const effects = makeEffects();
+    handleSystemBackPress(
+      { overlayOpen: false, locked: false, pathname: "/settings", settingsSubScreenOpen: true },
+      effects,
+    );
+    expect(effects.navigateToWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it("registration is a single slot and unregister clears only its own handler", () => {
+    expect(hasSettingsSubScreen()).toBe(false);
+    const first = vi.fn(() => true);
+    const second = vi.fn(() => true);
+    const unregisterFirst = registerSettingsBackHandler(first);
+    registerSettingsBackHandler(second);
+    unregisterFirst();
+    expect(getSettingsBackHandler()).toBe(second);
+    expect(hasSettingsSubScreen()).toBe(true);
   });
 });
 

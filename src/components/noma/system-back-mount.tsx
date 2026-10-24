@@ -4,7 +4,7 @@ import { App as CapacitorApp } from "@capacitor/app";
 import { useRouter, useRouterState } from "@tanstack/react-router";
 import { useAppLock } from "@/lib/noma/AppLockContext";
 import { dismissTopOverlay, hasOpenOverlay } from "@/lib/noma/overlay-registry";
-import { handleSystemBackPress } from "@/lib/noma/system-back";
+import { handleSystemBackPress, hasSettingsSubScreen } from "@/lib/noma/system-back";
 
 /**
  * Installs the single app-wide Android `backButton` listener (see
@@ -43,6 +43,7 @@ export function SystemBackMount() {
           overlayOpen: hasOpenOverlay(),
           locked: liveRef.current.locked,
           pathname: liveRef.current.pathname,
+          settingsSubScreenOpen: hasSettingsSubScreen(),
         },
         {
           dismissOverlay: () => {
