@@ -11,6 +11,7 @@ import { syncDynamicColor } from "@/lib/noma/dynamic-color";
 import { setHapticsEnabled } from "@/lib/noma/haptics";
 import { signalSplashReady } from "@/lib/noma/splash-handoff";
 import { initNotificationOpenListener } from "@/lib/noma/notification-open";
+import { initNoteLinkListener } from "@/lib/noma/note-link";
 import { useAppLock } from "@/lib/noma/AppLockContext";
 import { LockScreen } from "./lock-screen";
 
@@ -92,6 +93,14 @@ export function AppGate({ children }: { children: ReactNode }) {
   // covers them. Native-only and register-once inside the module.
   useEffect(() => {
     initNotificationOpenListener();
+  }, []);
+
+  // Widget note door (native-feel #10): register the appUrlOpen listener
+  // for app.noma.notes://note/<id> links beside the reminder one. Both
+  // doors feed the same pending-open slot; each validator rejects the
+  // other's URLs. Native-only and register-once inside the module.
+  useEffect(() => {
+    initNoteLinkListener();
   }, []);
 
   if (auth.configured && auth.loading) {

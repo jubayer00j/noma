@@ -72,6 +72,7 @@ import { useShortcutConsumption } from "@/lib/noma/shortcut";
 import { registerWorkspaceBackHandler, resolveWorkspaceBackStep } from "@/lib/noma/system-back";
 import { usePendingCapture, type CaptureRequest } from "@/lib/noma/capture";
 import { findNoteToOpen, usePendingNoteOpen } from "@/lib/noma/notification-open";
+import { useWidgetSnapshotSync } from "@/lib/noma/widget-snapshot";
 import { initShareTarget } from "@/lib/noma/share-target";
 import { saveImageAttachment } from "@/lib/noma/media";
 import {
@@ -964,6 +965,16 @@ export function Workspace() {
     allNotes,
     openNote,
   ]);
+
+  // Keep the home-screen widget's staged snapshot (native-feel #10) in
+  // step with the library: the widget renders from the snapshot file,
+  // staged on notes/lock changes and flushed when the app hides. An
+  // account switch clears the previous account's snapshot first.
+  useWidgetSnapshotSync({
+    notes,
+    appLockEnabled: settings.appLockEnabled,
+    dbName: db?.name ?? null,
+  });
 
   // Keyboard shortcuts.
   useEffect(() => {

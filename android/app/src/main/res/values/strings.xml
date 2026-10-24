@@ -11,5 +11,7 @@
     <string name="widget_label">New note</string>
     <string name="widget_caption">Capture a thought</string>
     <string name="widget_description">Quickly capture a new note in Noma</string>
+    <string name="widget_today_label">Today</string>
+    <string name="widget_today_invite">Today\'s note — tap to start</string>
     <string name="tile_label">New note</string>
 </resources>
