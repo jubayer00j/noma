@@ -119,6 +119,30 @@ export function resolveAiPreset(
   );
 }
 
+/**
+ * True when a draft provider configuration differs from the saved
+ * record — the "dirty" check behind the saved-key branch's "Save
+ * provider settings" button. Comparison is on effective settings
+ * only: a missing provider means Gemini, base URLs compare
+ * normalized (trailing slashes ignored), models compare trimmed.
+ * For Gemini there is no editable endpoint or model in the UI, so
+ * provider equality decides; the key and the enable flag are not
+ * provider settings and never make this true.
+ */
+export function aiProviderSettingsChanged(
+  saved: AiSettings | null,
+  candidate: AiSettings,
+): boolean {
+  const savedProvider = saved?.provider ?? "gemini";
+  const candidateProvider = candidate.provider ?? "gemini";
+  if (savedProvider !== candidateProvider) return true;
+  if (candidateProvider !== "openai-compatible") return false;
+  return (
+    normalizeBaseUrl(saved?.baseUrl) !== normalizeBaseUrl(candidate.baseUrl) ||
+    (saved?.model ?? "").trim() !== (candidate.model ?? "").trim()
+  );
+}
+
 /** Prompt input budget: very long notes are middle-truncated (head+tail kept). */
 export const AI_MAX_INPUT_CHARS = 24_000;
 
@@ -741,3 +765,4 @@ export async function suggestTags(
   const { text } = await generateText(apiKey, prompt, settings);
   return { tags: parseTagSuggestions(text, input.currentTagNames), truncated: prepared.truncated };
 }
+

@@ -10,6 +10,7 @@ All notable changes to Noma. Dates are merge dates on `main`.
 - Under the hood it is two API shapes, not a provider zoo: Gemini's native API as before, and one chat-completions client (Bearer key, `{model, messages}` in, `choices[0].message.content` out) shared by every preset. Test connection, Summarize and Suggest tags all route through one dispatch on the provider; prompts never change, and the #84 error mapping carries over with provider-neutral messages (bad key, quota, busy, model-unavailable naming the model). OpenRouter gets the identification headers its docs ask for; custom endpoints must be https.
 - Keys still live only in the per-account on-device record — never in AppSettings, never in backups or sync (the release-gate test now covers OpenAI-compatible records too). The honest privacy line, stated in Settings: your note text goes to whichever provider you pick; Noma itself still sees nothing.
 - Deliberately not here: a native Anthropic client (phase 2 — Anthropic is reachable meanwhile through OpenRouter), model-list fetching, and streaming.
+- Review fix (Codex P2): with a key already saved, provider/model edits had no way to persist — Test ran against the unsaved draft while note actions kept using the old record. The saved-key UI now shows a "Save provider settings" button exactly when the drafts differ from the saved record, and a passing test while drafts are unsaved says so instead of claiming the provider is ready.
 - Device-only proof: pick a second provider (e.g. OpenRouter with any model), save its key, Test connection succeeds, Summarize + Suggest tags work on a real note; switching back to Gemini keeps working with the original key.
 
 ### Default AI model moves to Gemini 3.5 Flash-Lite — PR #85
@@ -172,3 +173,4 @@ Ten items to make the Android app feel native, worked in order. (The roadmap abo
 - **TanStack CVE bump (PR #57):** unblocked Vercel deployments (`BLOCKED_PACKAGE` on the old `@tanstack/react-start`).
 - **Startup polish (PR #58):** branded boot screen + structural workspace skeleton replace the bare "Opening Noma…" states.
 - **Hybrid backup rebuild (PR #59):** backup engine moved into the app shell (sync-after-edit + scheduled presets) instead of living in the Settings screen; Android gets a real silent uploader via WorkManager (PR #60), with a javac fix in PR #61.
+

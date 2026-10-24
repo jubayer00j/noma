@@ -8,6 +8,7 @@ import {
   OPENAI_PRESETS,
   OPENROUTER_BASE_URL,
   aiActionsAvailable,
+  aiProviderSettingsChanged,
   clearAiSettings,
   getAiSettings,
   normalizeBaseUrl,
@@ -804,6 +805,44 @@ describe("AI provider presets", () => {
   });
 });
 
+/* ---------------- Draft-vs-saved provider comparison (saved-key Save button) ---------------- */
+
+describe("aiProviderSettingsChanged", () => {
+  const groq = {
+    enabled: true,
+    apiKey: API_KEY,
+    provider: "openai-compatible" as const,
+    baseUrl: "https://api.groq.com/openai/v1",
+    model: "llama-3.3-70b-versatile",
+  };
+  const gemini = { enabled: true, apiKey: API_KEY, provider: "gemini" as const };
+
+  it("identical records are not dirty", () => {
+    expect(aiProviderSettingsChanged(groq, { ...groq })).toBe(false);
+    expect(aiProviderSettingsChanged(gemini, { ...gemini })).toBe(false);
+  });
+
+  it("a provider change is dirty in either direction", () => {
+    expect(aiProviderSettingsChanged(gemini, groq)).toBe(true);
+    expect(aiProviderSettingsChanged(groq, gemini)).toBe(true);
+  });
+
+  it("an endpoint or model change is dirty, but trailing slashes and padding are not", () => {
+    expect(
+      aiProviderSettingsChanged(groq, { ...groq, baseUrl: "https://api.example.com/v1" }),
+    ).toBe(true);
+    expect(aiProviderSettingsChanged(groq, { ...groq, baseUrl: groq.baseUrl + "/" })).toBe(false);
+    expect(aiProviderSettingsChanged(groq, { ...groq, model: "other-model" })).toBe(true);
+    expect(aiProviderSettingsChanged(groq, { ...groq, model: ` ${groq.model} ` })).toBe(false);
+  });
+
+  it("a Gemini record with no model override is not dirty against a Gemini draft", () => {
+    expect(aiProviderSettingsChanged(gemini, { ...gemini })).toBe(false);
+    expect(aiProviderSettingsChanged(null, { ...gemini })).toBe(false);
+    expect(aiProviderSettingsChanged(null, groq)).toBe(true);
+  });
+});
+
 /* ---------------- The key never reaches a backup, any provider ---------------- */
 
 describe("AI key containment (OpenAI-compatible record)", () => {
@@ -835,3 +874,4 @@ describe("AI key containment (OpenAI-compatible record)", () => {
     expect(JSON.stringify(payload)).not.toContain(API_KEY);
   });
 });
+

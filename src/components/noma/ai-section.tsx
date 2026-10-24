@@ -17,6 +17,7 @@ import {
   AiError,
   GEMINI_MODEL_LABEL,
   OPENAI_PRESETS,
+  aiProviderSettingsChanged,
   clearAiSettings,
   getAiSettings,
   normalizeBaseUrl,
@@ -180,6 +181,18 @@ export function AiSection({ ownerId }: { ownerId: string | null }) {
     toast.success("AI key saved on this device");
   }
 
+  /** Persist draft provider/model edits alongside the already-saved key. */
+  function saveProviderSettings() {
+    const error = draftError();
+    if (error) {
+      toast.error(error);
+      return;
+    }
+    persist(buildCandidate(savedKey));
+    setTestState({ kind: "idle" });
+    toast.success("Provider settings saved");
+  }
+
   function removeKey() {
     persist(null);
     setKeyDraft("");
@@ -205,6 +218,13 @@ export function AiSection({ ownerId }: { ownerId: string | null }) {
       });
     }
   }
+
+  // Whether the drafts differ from the saved record (saved-key
+  // branch only — with no saved record there is nothing to be dirty
+  // against). Drives the Save button and the test-pass copy below.
+  const providerDirty = savedKey
+    ? aiProviderSettingsChanged(record, buildCandidate(savedKey))
+    : false;
 
   return (
     <div className="space-y-5">
@@ -293,6 +313,11 @@ export function AiSection({ ownerId }: { ownerId: string | null }) {
                 </span>
               </div>
               <div className="flex flex-wrap gap-2">
+                {providerDirty && (
+                  <Button className={`h-11 ${tap}`} onClick={saveProviderSettings}>
+                    Save provider settings
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   className={`h-11 ${tap}`}
@@ -379,7 +404,9 @@ export function AiSection({ ownerId }: { ownerId: string | null }) {
 
           {testState.kind === "ok" && (
             <p className="text-sm text-primary" role="status">
-              Connected — {providerName} is ready.
+              {providerDirty
+                ? `Test passed — save provider settings to use ${providerName}.`
+                : `Connected — ${providerName} is ready.`}
             </p>
           )}
           {testState.kind === "error" && (
@@ -394,3 +421,4 @@ export function AiSection({ ownerId }: { ownerId: string | null }) {
     </div>
   );
 }
+
