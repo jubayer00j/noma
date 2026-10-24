@@ -4,6 +4,14 @@ All notable changes to Noma. Dates are merge dates on `main`.
 
 ## 2026-10-24
 
+### Per-provider AI keys — PR #87
+
+- Bug fix, found live on device within the hour of #86 shipping: switching providers sent the PREVIOUS provider's key to the new one. The AI record held a single key for every provider, and the saved-key UI had no key-entry field — so a user with a saved Gemini key who switched to OpenRouter watched Test connection fail with "that key didn't work" (OpenRouter was quite rightly rejecting the Gemini key), and the only place a new key could go was the Model field. Switching back could never restore the original key either.
+- Each provider preset now keeps its OWN slot — key + model, plus the endpoint for Custom — inside the same per-account on-device record. Selecting a provider loads its slot: its masked saved key if it has one, an empty key field if it doesn't (never another provider's key or mask). Keys can be replaced or removed per provider without touching the others, and a provider only ever receives its own key.
+- Existing records migrate themselves on read, losslessly: a single-key record's key and model land in the slot for its provider (an unmatched endpoint becomes the Custom slot, URL kept), and that slot becomes the active one. No re-entry, no setup step. Note actions keep consuming the active provider's projected settings, unchanged.
+- Keys still live only in that record — never in AppSettings, backups, or sync — and the release-gate backup test now proves it with three providers' keys stored at once: none of them appears anywhere in a built backup.
+- Device-only proof (checklist U2/U3): save a Gemini key, switch to OpenRouter, save a different key there, Summarize works; switch back to Gemini — the original key is intact, no re-entry.
+
 ### Multi-provider AI — PR #86
 
 - AI is no longer Gemini-only. Settings → AI features now offers a provider picker: Gemini (unchanged default — existing keys keep working with zero action) plus OpenAI-compatible presets for OpenAI, OpenRouter, Groq, Together, DeepSeek and Mistral, and a Custom endpoint field for any other OpenAI-compatible API. The model is free text per provider, so new models work without an app update; switching presets fills the field with that preset's default, which you can overwrite.
