@@ -238,9 +238,10 @@ public class MainActivity extends BridgeActivity {
         // Fallback: dismiss even if no ready signal ever arrives.
         splashHandler.postDelayed(this::dismissSplash, SPLASH_FALLBACK_MS);
 
-        // Hand the launch intent to the share target (a no-op for ordinary
-        // launches — the plugin only keeps ACTION_SEND / SEND_MULTIPLE).
-        NomaSharePlugin.onShareIntent(getIntent());
+        // No explicit share-intent forward here: BridgeActivity
+        // re-dispatches the launch intent through the onNewIntent
+        // override below during super.onCreate, so a forward here
+        // enqueued every cold share twice (duplicate notes).
     }
 
     /** Ready signal arrived (UI thread): dismiss now, or at the minimum display. */
