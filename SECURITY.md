@@ -22,4 +22,4 @@ To help us better understand and address the issue, please include as much detai
 
 ## Non-Security Bugs & Feature Requests
 
-For non-security bugs, general technical questions, and feature requests, please use the public [GitHub Issues](https://github.com/isit00j/noma/issues) or the in-app Contact & Feedback channel.
+For non-security bugs, general technical questions, and feature requests, please use the public [GitHub Issues](https://github.com/jubayer00j/noma/issues) or the in-app Contact & Feedback channel.

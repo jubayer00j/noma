@@ -98,7 +98,7 @@ export function ContactSection() {
 
           <div className="border-t border-border/60 pt-6">
             <p className="text-xs text-muted-foreground">
-              Noma v1.0.1 • Calm, offline-first notes for Web, PWA, and Android.
+              Noma v1.1.0 • Calm, offline-first notes for Web, PWA, and Android.
             </p>
           </div>
         </div>
