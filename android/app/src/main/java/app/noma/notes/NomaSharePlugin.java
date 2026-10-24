@@ -30,8 +30,11 @@ import java.util.concurrent.Executors;
  * Noma (ACTION_SEND / ACTION_SEND_MULTIPLE with text/plain or image/*)
  * and hands it to the web layer's capture queue.
  *
- * MainActivity forwards its launch intent and every onNewIntent here.
- * Shared intents wait in a static FIFO queue: several shares can arrive
+ * MainActivity forwards every onNewIntent here (the framework also
+ * re-dispatches the launch intent through onNewIntent on a cold start).
+ * A guard in onShareIntent drops a re-delivery of the SAME Intent object,
+ * so one share can never be enqueued twice. Shared intents wait in a
+ * static FIFO queue: several shares can arrive
  * before the web layer drains it (a cold launch may sit behind App Lock
  * first), and every one of them must survive — a single pending slot
  * would silently drop all but the last. getSharedContent pops the
@@ -55,11 +58,26 @@ public class NomaSharePlugin extends Plugin {
     private static final Queue<Intent> PENDING_SHARE_INTENTS = new ConcurrentLinkedQueue<>();
     private static volatile NomaSharePlugin instance;
 
+    /**
+     * The most recently enqueued share intent. The framework can deliver
+     * the SAME Intent object more than once for one share (the launch
+     * intent is re-dispatched through onNewIntent during onCreate), so a
+     * repeat of this exact reference is a re-delivery, not a new share.
+     * Two genuine shares are always distinct Intent objects, so reference
+     * identity can never eat a real second share.
+     */
+    private static volatile Intent lastEnqueuedIntent;
+
     /** Called by MainActivity for the launch intent and every new intent. */
     public static void onShareIntent(Intent intent) {
         if (intent == null) return;
         String action = intent.getAction();
         if (!Intent.ACTION_SEND.equals(action) && !Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+            return;
+        }
+        // Same Intent object delivered again = the same share, not a new
+        // one (see lastEnqueuedIntent) — never enqueue it twice.
+        if (intent == lastEnqueuedIntent) {
             return;
         }
         // FIFO: an unread share must never be overwritten by a newer one.
@@ -68,6 +86,7 @@ public class NomaSharePlugin extends Plugin {
             PENDING_SHARE_INTENTS.poll();
         }
         PENDING_SHARE_INTENTS.offer(intent);
+        lastEnqueuedIntent = intent;
         NomaSharePlugin current = instance;
         if (current != null) {
             current.notifyListeners("shareReceived", new JSObject());

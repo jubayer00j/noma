@@ -4,6 +4,13 @@ All notable changes to Noma. Dates are merge dates on `main`.
 
 ## 2026-10-24
 
+### Cold-start shares no longer create the note twice — PR #88
+
+- Bug fix, found on device during acceptance testing (checklist B3): sharing a photo into Noma while the app was closed or sitting behind the App Lock created the same note twice, every time. Sharing into an already-running Noma was fine.
+- Root cause was a double delivery on the cold-start path: Capacitor's `BridgeActivity` re-dispatches the launch intent through `onNewIntent` during `super.onCreate`, and `MainActivity.onCreate` then forwarded `getIntent()` to the share plugin a second time by hand — so one share sat in the native queue twice. Each copy drained with a fresh capture id, so the web layer's consume-once guard couldn't recognise them as the same share.
+- `MainActivity` no longer forwards the launch intent explicitly (it still arrives via `onNewIntent`), and the share plugin now ignores a re-delivery of the exact same Intent object as a belt-and-braces guard. Two genuine shares in a row are always distinct Intent objects, so back-to-back shares still both land.
+- Device-only proof (checklist B3/B4): share a photo while Noma is closed/App-Locked → unlock → exactly one note; share two items back-to-back → two notes.
+
 ### Per-provider AI keys — PR #87
 
 - Bug fix, found live on device within the hour of #86 shipping: switching providers sent the PREVIOUS provider's key to the new one. The AI record held a single key for every provider, and the saved-key UI had no key-entry field — so a user with a saved Gemini key who switched to OpenRouter watched Test connection fail with "that key didn't work" (OpenRouter was quite rightly rejecting the Gemini key), and the only place a new key could go was the Model field. Switching back could never restore the original key either.
