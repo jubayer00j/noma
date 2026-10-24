@@ -5,13 +5,17 @@ import {
   AI_ERROR_MESSAGES,
   AiError,
   GEMINI_MODEL,
+  OPENAI_PRESETS,
+  OPENROUTER_BASE_URL,
   aiActionsAvailable,
   clearAiSettings,
   getAiSettings,
+  normalizeBaseUrl,
   noteEligibleForAi,
   parseSummaryBlocks,
   parseTagSuggestions,
   prepareNoteText,
+  resolveAiPreset,
   saveAiSettings,
   suggestTags,
   summarizeNote,
@@ -586,5 +590,248 @@ describe("summary rendering", () => {
     // The escaped payload remains visible as literal text, not markup.
     const text = doc.body.textContent ?? "";
     expect(text).toContain('<img src=x onerror=alert(1)>');
+  });
+});
+
+/* ---------------- OpenAI-compatible client ---------------- */
+
+describe("OpenAI-compatible client", () => {
+  const GROQ_SETTINGS = {
+    enabled: true,
+    apiKey: API_KEY,
+    provider: "openai-compatible" as const,
+    baseUrl: "https://api.groq.com/openai/v1",
+    model: "llama-3.3-70b-versatile",
+  };
+
+  function chatResponse(text: string, status = 200): Response {
+    return new Response(
+      JSON.stringify({ choices: [{ message: { role: "assistant", content: text } }] }),
+      { status, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  function chatError(status: number, message: string): Response {
+    return new Response(JSON.stringify({ error: { message, code: "x", type: "t" } }), {
+      status,
+    });
+  }
+
+  it("sends the chat-completions shape with a Bearer key", async () => {
+    const { calls } = stubFetch(() => chatResponse("A tidy summary."));
+    const result = await summarizeNote(
+      API_KEY,
+      { title: "Trip notes", text: "Pack the camera." },
+      GROQ_SETTINGS,
+    );
+    expect(result).toEqual({ summary: "A tidy summary.", truncated: false });
+    expect(calls).toHaveLength(1);
+    const { url, init } = calls[0]!;
+    expect(url).toBe("https://api.groq.com/openai/v1/chat/completions");
+    expect(init.method).toBe("POST");
+    const headers = init.headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe(`Bearer ${API_KEY}`);
+    const body = JSON.parse(String(init.body)) as {
+      model: string;
+      messages: { role: string; content: string }[];
+    };
+    expect(body.model).toBe("llama-3.3-70b-versatile");
+    expect(body.messages[0]!.role).toBe("user");
+    expect(body.messages[0]!.content).toContain("Pack the camera.");
+  });
+
+  it("sends OpenRouter identification headers only for OpenRouter", async () => {
+    (globalThis as unknown as { window: Record<string, unknown> }).window["location"] = {
+      origin: "https://noma.test",
+    };
+    const openRouterSettings = {
+      ...GROQ_SETTINGS,
+      baseUrl: OPENROUTER_BASE_URL,
+      model: "openai/gpt-4o-mini",
+    };
+    const { calls: openRouterCalls } = stubFetch(() => chatResponse("ok"));
+    await testAiConnection(API_KEY, openRouterSettings);
+    const openRouterHeaders = openRouterCalls[0]!.init.headers as Record<string, string>;
+    expect(openRouterHeaders["X-Title"]).toBe("Noma");
+    expect(openRouterHeaders["HTTP-Referer"]).toBe("https://noma.test");
+
+    const { calls: groqCalls } = stubFetch(() => chatResponse("ok"));
+    await testAiConnection(API_KEY, GROQ_SETTINGS);
+    const groqHeaders = groqCalls[0]!.init.headers as Record<string, string>;
+    expect(groqHeaders["X-Title"]).toBeUndefined();
+    expect(groqHeaders["HTTP-Referer"]).toBeUndefined();
+  });
+
+  it("joins parts-array content and reports empty choices as empty", async () => {
+    stubFetch(
+      () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: [
+                    { type: "text", text: "one " },
+                    { type: "text", text: "two" },
+                  ],
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+    );
+    const ok = await testAiConnection(API_KEY, GROQ_SETTINGS);
+    expect(ok).toBe(true);
+
+    stubFetch(() => new Response(JSON.stringify({ choices: [] }), { status: 200 }));
+    const empty = await testAiConnection(API_KEY, GROQ_SETTINGS).catch((e: unknown) => e);
+    expect((empty as AiError).kind).toBe("empty");
+
+    stubFetch(() => new Response(JSON.stringify({}), { status: 200 }));
+    const malformed = await testAiConnection(API_KEY, GROQ_SETTINGS).catch((e: unknown) => e);
+    expect((malformed as AiError).kind).toBe("bad-response");
+  });
+
+  it("maps provider failures to the shared kinds with neutral messages", async () => {
+    const cases: { name: string; handler: () => Response; kind: string; match?: string }[] = [
+      { name: "401", handler: () => chatError(401, "bad key"), kind: "invalid-key" },
+      { name: "429", handler: () => chatError(429, "slow down"), kind: "rate-limited" },
+      {
+        name: "404 names the model",
+        handler: () => chatError(404, "not found"),
+        kind: "model-unavailable",
+        match: "llama-3.3-70b-versatile",
+      },
+      { name: "503", handler: () => chatError(503, "overloaded"), kind: "transient" },
+      {
+        name: "envelope message carried",
+        handler: () => chatError(418, "provider says no"),
+        kind: "api-error",
+        match: "provider says no",
+      },
+      {
+        name: "non-JSON error body falls back",
+        handler: () => new Response("{oops", { status: 418 }),
+        kind: "bad-response",
+      },
+    ];
+    for (const testCase of cases) {
+      stubFetch(testCase.handler);
+      const error = await testAiConnection(API_KEY, GROQ_SETTINGS).catch((e: unknown) => e);
+      expect(error, testCase.name).toBeInstanceOf(AiError);
+      expect((error as AiError).kind, testCase.name).toBe(testCase.kind);
+      if (testCase.match) {
+        expect((error as AiError).message, testCase.name).toContain(testCase.match);
+      }
+      expect((error as AiError).message, testCase.name).not.toContain("Gemini");
+    }
+  });
+
+  it("routes a record without a provider to Gemini, unchanged", async () => {
+    const { calls } = stubFetch(() => geminiResponse("ready"));
+    const ok = await testAiConnection(API_KEY, { enabled: true, apiKey: API_KEY });
+    expect(ok).toBe(true);
+    expect(calls[0]!.url).toContain("generativelanguage.googleapis.com");
+  });
+
+  it("refuses insecure endpoints and missing models before any fetch", async () => {
+    const { calls: httpCalls } = stubFetch(() => chatResponse("never"));
+    const httpError = await testAiConnection(API_KEY, {
+      ...GROQ_SETTINGS,
+      baseUrl: "http://api.example.com/v1",
+    }).catch((e: unknown) => e);
+    expect((httpError as AiError).message).toContain("https://");
+    expect(httpCalls).toHaveLength(0);
+
+    const { calls: modelCalls } = stubFetch(() => chatResponse("never"));
+    const modelError = await testAiConnection(API_KEY, {
+      ...GROQ_SETTINGS,
+      model: "   ",
+    }).catch((e: unknown) => e);
+    expect((modelError as AiError).message).toContain("model");
+    expect(modelCalls).toHaveLength(0);
+  });
+});
+
+/* ---------------- Presets + record shape ---------------- */
+
+describe("AI provider presets", () => {
+  it("every preset endpoint is https with no trailing slash; custom stays blank", () => {
+    expect(OPENAI_PRESETS.length).toBeGreaterThan(0);
+    for (const preset of OPENAI_PRESETS) {
+      if (preset.id === "custom") {
+        expect(preset.baseUrl).toBe("");
+        expect(preset.defaultModel).toBe("");
+      } else {
+        expect(preset.baseUrl.startsWith("https://")).toBe(true);
+        expect(preset.baseUrl.endsWith("/")).toBe(false);
+        expect(preset.defaultModel.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("resolves stored records to presets, unknown URLs to custom", () => {
+    expect(resolveAiPreset("gemini", undefined)).toBe("gemini");
+    expect(resolveAiPreset(undefined, undefined)).toBe("gemini");
+    expect(resolveAiPreset("openai-compatible", "https://api.groq.com/openai/v1/")).toBe("groq");
+    expect(resolveAiPreset("openai-compatible", "https://api.example.com/v1")).toBe("custom");
+    expect(normalizeBaseUrl("https://api.example.com/v1///")).toBe("https://api.example.com/v1");
+  });
+
+  it("round-trips provider fields and drops unknown provider values", () => {
+    saveAiSettings(OWNER, {
+      enabled: true,
+      apiKey: API_KEY,
+      provider: "openai-compatible",
+      baseUrl: "https://api.groq.com/openai/v1",
+      model: "llama-3.3-70b-versatile",
+    });
+    expect(getAiSettings(OWNER)).toEqual({
+      enabled: true,
+      apiKey: API_KEY,
+      provider: "openai-compatible",
+      baseUrl: "https://api.groq.com/openai/v1",
+      model: "llama-3.3-70b-versatile",
+    });
+
+    const store = (globalThis.window as unknown as { localStorage: MemoryStorage }).localStorage;
+    store.setItem(
+      `noma-ai-v1-${OWNER}`,
+      JSON.stringify({ enabled: true, apiKey: API_KEY, provider: "bogus" }),
+    );
+    expect(getAiSettings(OWNER)).toEqual({ enabled: true, apiKey: API_KEY });
+  });
+});
+
+/* ---------------- The key never reaches a backup, any provider ---------------- */
+
+describe("AI key containment (OpenAI-compatible record)", () => {
+  it("a backup built with an OpenAI-compatible key record contains the key nowhere", async () => {
+    saveAiSettings(OWNER, {
+      enabled: true,
+      apiKey: API_KEY,
+      provider: "openai-compatible",
+      baseUrl: "https://api.groq.com/openai/v1",
+      model: "llama-3.3-70b-versatile",
+    });
+    const db = new FakeDb();
+    await db.notes.put(baseNote());
+
+    const { blob } = await buildBackupZip(asDb(db), OWNER);
+
+    const rawText = new TextDecoder("latin1").decode(await blob.arrayBuffer());
+    expect(rawText).not.toContain(API_KEY);
+
+    const zip = await JSZip.loadAsync(await blob.arrayBuffer());
+    for (const name of Object.keys(zip.files)) {
+      const entry = zip.files[name];
+      if (!entry || entry.dir) continue;
+      const text = await entry.async("string");
+      expect(text, `entry ${name}`).not.toContain(API_KEY);
+    }
+
+    const payload = await readBackupZip(blob, OWNER);
+    expect(JSON.stringify(payload)).not.toContain(API_KEY);
   });
 });

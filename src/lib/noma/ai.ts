@@ -2,14 +2,20 @@ import { htmlToPlainText } from "./sanitize";
 import type { Note } from "./types";
 
 /**
- * Opt-in AI (roadmap #8) — bring-your-own-key Gemini features.
+ * Opt-in AI (roadmap #8) — bring-your-own-key features, now
+ * multi-provider. The user picks a provider, pastes that provider's
+ * key, and every call goes straight from this device to the chosen
+ * provider under that key. Calls happen ONLY inside user-initiated
+ * flows — the two note actions (Summarize / Suggest tags) and the
+ * Settings "Test connection" button. Nothing ambient, nothing
+ * automatic.
  *
- * Zero-cost by construction: Noma ships no shared key and runs no AI
- * server. The user pastes their own free-tier Gemini API key (AI
- * Studio), and every call goes straight from this device to Google
- * under that key. Calls happen ONLY inside user-initiated flows — the
- * two note actions (Summarize / Suggest tags) and the Settings
- * "Test connection" button. Nothing ambient, nothing automatic.
+ * Two API shapes cover every major provider: Gemini's native API
+ * (direct Google calls) and one OpenAI-compatible chat-completions
+ * client (OpenAI, OpenRouter, Groq, Together, DeepSeek, Mistral, xAI,
+ * and any custom OpenAI-compatible endpoint). A native Anthropic
+ * client is the named phase-2 follow-up; Anthropic is reachable
+ * meanwhile through OpenRouter.
  *
  * The key lives in a per-account localStorage record (mirroring the
  * Drive connection and backup-encryption records). It NEVER enters
@@ -17,12 +23,101 @@ import type { Note } from "./types";
  * backup ZIP, so a key stored there would ride into Drive backups.
  * localStorage keeps it out of backups, out of sync, off other
  * devices — and `disconnectDrive` clears it on sign-out, alongside the
- * backup-encryption record.
+ * backup-encryption record. The endpoint URL is not secret; only keys
+ * are asserted absent from backups.
  */
 
 export const GEMINI_MODEL = "gemini-3.5-flash-lite";
 export const GEMINI_MODEL_LABEL = "Gemini 3.5 Flash-Lite (free tier)";
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
+
+/* ---------------- Providers ---------------- */
+
+export type AiProvider = "gemini" | "openai-compatible";
+
+export interface AiPreset {
+  id: string;
+  label: string;
+  /** OpenAI-compatible base URL; "" for Gemini (native API) and Custom. */
+  baseUrl: string;
+  /** Default model filled into the model field on preset select; "" for Custom. */
+  defaultModel: string;
+  /** Where to get a key; null when the preset has no single key page. */
+  keyUrl: string | null;
+}
+
+export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
+/**
+ * OpenAI-compatible presets. Base URLs are the providers' documented
+ * OpenAI-compatible endpoints; default models are long-lived ids the
+ * user can overwrite — never a list, since new models appear weekly.
+ * "custom" lets any other OpenAI-compatible endpoint in.
+ */
+export const OPENAI_PRESETS: AiPreset[] = [
+  {
+    id: "openai",
+    label: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    defaultModel: "gpt-4o-mini",
+    keyUrl: "https://platform.openai.com/api-keys",
+  },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    baseUrl: OPENROUTER_BASE_URL,
+    defaultModel: "openai/gpt-4o-mini",
+    keyUrl: "https://openrouter.ai/keys",
+  },
+  {
+    id: "groq",
+    label: "Groq",
+    baseUrl: "https://api.groq.com/openai/v1",
+    defaultModel: "llama-3.3-70b-versatile",
+    keyUrl: "https://console.groq.com/keys",
+  },
+  {
+    id: "together",
+    label: "Together",
+    baseUrl: "https://api.together.xyz/v1",
+    defaultModel: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    keyUrl: "https://api.together.xyz/settings/api-keys",
+  },
+  {
+    id: "deepseek",
+    label: "DeepSeek",
+    baseUrl: "https://api.deepseek.com/v1",
+    defaultModel: "deepseek-chat",
+    keyUrl: "https://platform.deepseek.com/api_keys",
+  },
+  {
+    id: "mistral",
+    label: "Mistral",
+    baseUrl: "https://api.mistral.ai/v1",
+    defaultModel: "mistral-small-latest",
+    keyUrl: "https://console.mistral.ai/api-keys",
+  },
+  { id: "custom", label: "Custom endpoint", baseUrl: "", defaultModel: "", keyUrl: null },
+];
+
+/** Normalizes a stored base URL: trimmed, no trailing slashes. */
+export function normalizeBaseUrl(baseUrl: string | undefined): string {
+  return (baseUrl ?? "").trim().replace(/\/+$/, "");
+}
+
+/** Which preset a stored record corresponds to ("custom" when the URL matches none). */
+export function resolveAiPreset(
+  provider: AiProvider | undefined,
+  baseUrl: string | undefined,
+): string {
+  if (provider !== "openai-compatible") return "gemini";
+  const normalized = normalizeBaseUrl(baseUrl);
+  return (
+    OPENAI_PRESETS.find(
+      (preset) => preset.id !== "custom" && normalizeBaseUrl(preset.baseUrl) === normalized,
+    )?.id ?? "custom"
+  );
+}
 
 /** Prompt input budget: very long notes are middle-truncated (head+tail kept). */
 export const AI_MAX_INPUT_CHARS = 24_000;
@@ -69,14 +164,19 @@ export class AiError extends Error {
 /* ---------------- Local record (per account, this device only) ---------------- */
 
 /**
- * The whole AI configuration unit: the enable flag AND the key. Both
- * live here — never in AppSettings — so nothing AI-related can leak
- * into a backup or a sync payload.
+ * The whole AI configuration unit: the enable flag, the key, and —
+ * for OpenAI-compatible providers — the endpoint + model. All live
+ * here, never in AppSettings, so nothing AI-related can leak into a
+ * backup or a sync payload. Records written before providers existed
+ * carry no `provider` field and dispatch as Gemini (see generateText).
  */
 export interface AiSettings {
   enabled: boolean;
   apiKey: string;
   model?: string;
+  provider?: AiProvider;
+  /** OpenAI-compatible endpoint; ignored for Gemini. Not secret — only keys are. */
+  baseUrl?: string;
 }
 
 function localStore(): Storage | null {
@@ -105,6 +205,10 @@ export function getAiSettings(ownerId: string | null): AiSettings | null {
       enabled: parsed.enabled === true,
       apiKey: parsed.apiKey,
       ...(typeof parsed.model === "string" ? { model: parsed.model } : {}),
+      ...(parsed.provider === "gemini" || parsed.provider === "openai-compatible"
+        ? { provider: parsed.provider }
+        : {}),
+      ...(typeof parsed.baseUrl === "string" ? { baseUrl: parsed.baseUrl } : {}),
     };
   } catch {
     return null;
@@ -288,15 +392,15 @@ interface GenerateResult {
 }
 
 /**
- * Google's error envelope, when a failed call carries one. Only the
+ * A provider's error envelope, when a failed call carries one. Only the
  * message string is ever surfaced — never the key, the URL, or the
  * rest of the body. Returns null when there is nothing usable: a
  * non-JSON body, no error message, or a message that echoes the key
- * itself (defensive — Google never does, but a surfaced message must
+ * itself (defensive — providers never do, but a surfaced message must
  * never become a key leak). Long messages are capped so the UI keeps
  * one calm line, not a pasted stack.
  */
-async function readGoogleErrorMessage(
+async function readProviderErrorMessage(
   response: Response,
   key: string,
 ): Promise<string | null> {
@@ -366,7 +470,7 @@ async function generateContent(apiKey: string, prompt: string, model: string): P
     if (response.status === 500 || response.status === 502 || response.status === 503) {
       throw new AiError("transient");
     }
-    const apiMessage = await readGoogleErrorMessage(response, key);
+    const apiMessage = await readProviderErrorMessage(response, key);
     if (apiMessage) {
       throw new AiError(
         "api-error",
@@ -405,12 +509,156 @@ function modelFor(settings: AiSettings | null): string {
   return settings?.model?.trim() || GEMINI_MODEL;
 }
 
+/* ---------------- OpenAI-compatible client (raw fetch, no SDK) ---------------- */
+
+/**
+ * One OpenAI-compatible chat-completions call. Endpoint + auth per the
+ * OpenAI API reference every preset follows: POST
+ * <baseUrl>/chat/completions with a Bearer key, body {model,
+ * messages:[{role:"user",content:prompt}]}, reply text at
+ * choices[0].message.content (a string, or a parts array whose text
+ * parts are joined). OpenRouter additionally gets the identification
+ * headers its docs ask for. Error mapping mirrors the Gemini path's
+ * kinds with provider-neutral messages: 401/403 → invalid-key, 429 →
+ * rate-limited, 404 → model-unavailable (named), 5xx → transient,
+ * anything else → the provider's own envelope message, else the
+ * generic line. Config problems (no/insecure endpoint, no model) fail
+ * before any fetch, with a message that says what to fix in Settings.
+ */
+async function generateChatCompletion(
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+  prompt: string,
+  openRouter: boolean,
+): Promise<GenerateResult> {
+  const key = apiKey.trim();
+  if (!key) throw new AiError("no-key", "Add your API key in Settings to use AI.");
+  const endpoint = normalizeBaseUrl(baseUrl);
+  if (!endpoint || !/^https:\/\//.test(endpoint)) {
+    throw new AiError(
+      "bad-response",
+      "Set a provider endpoint URL starting with https:// in Settings.",
+    );
+  }
+  const resolvedModel = model.trim();
+  if (!resolvedModel) {
+    throw new AiError("bad-response", "Choose a model for this provider in Settings.");
+  }
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${key}`,
+    "Content-Type": "application/json",
+  };
+  if (openRouter) {
+    headers["X-Title"] = "Noma";
+    const referer = typeof window !== "undefined" ? window.location?.origin : undefined;
+    if (referer) headers["HTTP-Referer"] = referer;
+  }
+  let response: Response;
+  try {
+    response = await fetch(`${endpoint}/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: resolvedModel,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+  } catch {
+    throw new AiError("offline");
+  }
+  if (response.status === 429) throw new AiError("rate-limited");
+  if (response.status === 401 || response.status === 403) {
+    throw new AiError("invalid-key");
+  }
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new AiError(
+        "model-unavailable",
+        `The model "${resolvedModel}" isn't available through this provider right now. Try again later, or report the model name if it keeps failing.`,
+      );
+    }
+    if (response.status === 500 || response.status === 502 || response.status === 503) {
+      throw new AiError(
+        "transient",
+        "The provider is busy right now — try again in a little while.",
+      );
+    }
+    const apiMessage = await readProviderErrorMessage(response, key);
+    if (apiMessage) {
+      throw new AiError("api-error", `Couldn't complete that request: ${apiMessage}`);
+    }
+    throw new AiError(
+      "bad-response",
+      "The provider sent back something Noma couldn't read. Try again.",
+    );
+  }
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    throw new AiError(
+      "bad-response",
+      "The provider sent back something Noma couldn't read. Try again.",
+    );
+  }
+  const choices = (data as { choices?: unknown } | null)?.choices;
+  if (!Array.isArray(choices)) {
+    throw new AiError(
+      "bad-response",
+      "The provider sent back something Noma couldn't read. Try again.",
+    );
+  }
+  const content = (choices[0] as { message?: { content?: unknown } } | undefined)?.message?.content;
+  let text: string;
+  if (typeof content === "string") {
+    text = content;
+  } else if (Array.isArray(content)) {
+    text = content
+      .map((part) => {
+        const value = (part as { text?: unknown } | null)?.text;
+        return typeof value === "string" ? value : "";
+      })
+      .join("");
+  } else {
+    text = "";
+  }
+  if (!text.trim()) {
+    throw new AiError("empty", "The provider didn't return anything for this note. Try again.");
+  }
+  return { text: text.trim() };
+}
+
+/**
+ * Single dispatch for every AI call: old records (no provider field)
+ * and explicit "gemini" records take the native Gemini path; records
+ * with provider "openai-compatible" take the chat-completions path
+ * with their stored endpoint + model. Prompts never change.
+ */
+async function generateText(
+  apiKey: string,
+  prompt: string,
+  settings: AiSettings | null,
+): Promise<GenerateResult> {
+  if (settings?.provider === "openai-compatible") {
+    const endpoint = normalizeBaseUrl(settings.baseUrl);
+    return generateChatCompletion(
+      apiKey,
+      endpoint,
+      settings.model ?? "",
+      prompt,
+      endpoint === OPENROUTER_BASE_URL,
+    );
+  }
+  return generateContent(apiKey, prompt, modelFor(settings));
+}
+
 /** Settings "Test connection": one tiny call; resolves true, throws AiError otherwise. */
 export async function testAiConnection(
   apiKey: string,
   settings: AiSettings | null = null,
 ): Promise<boolean> {
-  await generateContent(apiKey, "Reply with the single word: ready", modelFor(settings));
+  await generateText(apiKey, "Reply with the single word: ready", settings);
   return true;
 }
 
@@ -447,7 +695,7 @@ export async function summarizeNote(
     "Note:",
     prepared.text,
   ].join("\n");
-  const { text } = await generateContent(apiKey, prompt, modelFor(settings));
+  const { text } = await generateText(apiKey, prompt, settings);
   return { summary: text, truncated: prepared.truncated };
 }
 
@@ -490,6 +738,6 @@ export async function suggestTags(
     "Note:",
     prepared.text,
   ].join("\n");
-  const { text } = await generateContent(apiKey, prompt, modelFor(settings));
+  const { text } = await generateText(apiKey, prompt, settings);
   return { tags: parseTagSuggestions(text, input.currentTagNames), truncated: prepared.truncated };
 }

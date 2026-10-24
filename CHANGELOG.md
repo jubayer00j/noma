@@ -4,6 +4,14 @@ All notable changes to Noma. Dates are merge dates on `main`.
 
 ## 2026-10-24
 
+### Multi-provider AI — PR #86
+
+- AI is no longer Gemini-only. Settings → AI features now offers a provider picker: Gemini (unchanged default — existing keys keep working with zero action) plus OpenAI-compatible presets for OpenAI, OpenRouter, Groq, Together, DeepSeek and Mistral, and a Custom endpoint field for any other OpenAI-compatible API. The model is free text per provider, so new models work without an app update; switching presets fills the field with that preset's default, which you can overwrite.
+- Under the hood it is two API shapes, not a provider zoo: Gemini's native API as before, and one chat-completions client (Bearer key, `{model, messages}` in, `choices[0].message.content` out) shared by every preset. Test connection, Summarize and Suggest tags all route through one dispatch on the provider; prompts never change, and the #84 error mapping carries over with provider-neutral messages (bad key, quota, busy, model-unavailable naming the model). OpenRouter gets the identification headers its docs ask for; custom endpoints must be https.
+- Keys still live only in the per-account on-device record — never in AppSettings, never in backups or sync (the release-gate test now covers OpenAI-compatible records too). The honest privacy line, stated in Settings: your note text goes to whichever provider you pick; Noma itself still sees nothing.
+- Deliberately not here: a native Anthropic client (phase 2 — Anthropic is reachable meanwhile through OpenRouter), model-list fetching, and streaming.
+- Device-only proof: pick a second provider (e.g. OpenRouter with any model), save its key, Test connection succeeds, Summarize + Suggest tags work on a real note; switching back to Gemini keeps working with the original key.
+
 ### Default AI model moves to Gemini 3.5 Flash-Lite — PR #85
 - The old default, `gemini-2.5-flash`, answers new API keys with a 404: since September 18, Google limits the 2.5 family to users who actively used those models before, and a brand-new free key is a "new user". The user proved it live — PR #84's error surfacing named the model instead of hiding behind the generic line.
 - The default is now `gemini-3.5-flash-lite`: one of Google's two named directions for new projects, the free-tier-friendly lite model with the highest availability, and more than enough for a summary and five tags. Deliberately not the moving `gemini-flash-latest` alias (the model behind it can change without notice) and not `gemini-3.8-flash` (reported as frequently overloaded on the free tier). Nothing else changes — same prompts, same key handling, same error mapping, and a per-record model override still wins when set.
