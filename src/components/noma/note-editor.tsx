@@ -1,4 +1,5 @@
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
+import { attachCaretAboveKeyboard } from "@/lib/noma/keyboard-scroll";
 import {
   Bold,
   Code2,
@@ -541,6 +542,18 @@ export function NoteEditor({
     textarea.style.height = "auto";
     textarea.style.height = `${textarea.scrollHeight}px`;
   }, [note.title, note.id]);
+
+  // Caret-above-keyboard: while editing, keep the current line above the
+  // on-screen keyboard (see keyboard-scroll.ts). The note surface is the
+  // editor's scroll container; finding it from the editor DOM keeps
+  // workspace.tsx's scroll preservation untouched, and this effect only
+  // exists in edit mode (NoteEditor never mounts for the read view).
+  useEffect(() => {
+    if (!editor) return;
+    const scroller = editor.view.dom.closest('[data-testid="note-surface"]');
+    if (!(scroller instanceof HTMLElement)) return;
+    return attachCaretAboveKeyboard(editor, scroller);
+  }, [editor]);
 
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
