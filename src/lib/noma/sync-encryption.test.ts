@@ -173,7 +173,7 @@ function makePayload(notes: Note[]): BackupPayload {
   return {
     manifest: {
       backupFormatVersion: 2,
-      nomaVersion: "1.0.1",
+      nomaVersion: "1.1.0",
       createdAt: new Date(T0).toISOString(),
       noteCount: notes.length,
       folderCount: 0,

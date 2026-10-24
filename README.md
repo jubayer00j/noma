@@ -21,9 +21,12 @@ Noma is a minimalist note-taking application designed to provide a calm, distrac
   - [Images & Attachments](#images--attachments)
   - [Security & App Lock](#security)
   - [Backup & Restore](#backup--restore)
+  - [Import](#import)
   - [Authentication & Cloud Backups](#authentication--cloud-backups)
+  - [AI (Opt-in)](#ai-opt-in)
   - [Android Application](#android)
   - [Web & PWA](#webpwa)
+  - [Settings](#settings)
   - [Developer Contact](#contact--feedback)
 - [Privacy & Security](#privacy--security)
 - [Technology Stack](#technology-stack)
@@ -45,7 +48,7 @@ Noma is built around a local-first architecture where device storage (IndexedDB 
 - **Local Device Storage:** Notes, attachments, reminders, and settings are saved locally to IndexedDB.
 - **Calm Interface:** Clean design powered by Tiptap and Tailwind CSS, focusing on productivity without clutter.
 - **Cross-Platform Availability:** Run Noma in a web browser, install it as a desktop/mobile PWA, or run the native Android build.
-- **User-Driven Cloud Backups:** Optionally sign in to Firebase for user accounts and export backup archives to Google Drive or local `.zip` files.
+- **User-Driven Cloud Backups & Sync:** Optionally sign in and back up to Google Drive (manually, on a schedule, or automatically after edits) or to local `.zip` files. The same Drive archive carries multi-device sync, and the whole archive can be encrypted with a passphrase only you know.
 
 ---
 
@@ -67,6 +70,9 @@ Noma is built around a local-first architecture where device storage (IndexedDB 
 - **Favorites & Pinned Notes:** Pin important notes to the top of your workspace or mark favorites for quick access.
 - **Instant Search & Filtering:** Full-text search across titles and content, alongside tag and folder filtering.
 - **Archive & Trash:** Archive inactive notes or move notes to trash before permanent deletion.
+- **Daily Notes & Templates:** One daily note per local date — the Today door reopens it instead of duplicating. Notes can be saved as templates (three built-ins included), with `{{date}}` as the only placeholder.
+- **Backlinks:** Type `[[` in the editor to link another note; links are id-based, so renames never break them, and each note shows what links to it.
+- **Version History:** Per-note snapshots of settled edits (kept on this device only), with undoable restore.
 
 ### Reminders
 
@@ -74,6 +80,7 @@ Noma is built around a local-first architecture where device storage (IndexedDB 
 - **Dedicated Reminders View:** Centrally view all upcoming, due, and completed note reminders.
 - **Local Notifications:** Trigger native system notifications on Android (via `@capacitor/local-notifications`) and Web Notifications on PWA/Desktop.
 - **Status Lifecycle:** Complete, dismiss, or reschedule reminders for a future date/time.
+- **Private Notifications (Android):** Reminder notifications show the note's title and time — but a per-note-locked note's reminder stays fully generic, so nothing private reaches the lock screen.
 
 ### Advanced Charts & Graphs
 
@@ -95,6 +102,7 @@ Noma is built around a local-first architecture where device storage (IndexedDB 
 
 - **App Lock System:** Guard application entry with local credential verification (PBKDF2-HMAC-SHA256).
 - **Unlock Options:** Unlock via Noma Pattern, Noma Password, or native Android Biometrics (`androidx.biometric`).
+- **Per-Note Lock:** Individual notes can be locked with a pattern, PIN, or password. Unlike App Lock (an access barrier), per-note lock is real encryption: the note body and its attachments are sealed with AES-256-GCM, and only the title stays visible in lists. Fingerprint unlock is an on-device convenience copy of the key — there is **no recovery** if you forget the credential.
 - **Rate Limiting & Lockout:** Protection against repeated failed unlock attempts with exponential lockout delays up to 30 minutes.
 - **Configurable Lock Timeout:** Set automatic re-locking timers (immediate, 1 min, 5 mins, 15 mins, etc.).
 - **Launcher Shortcut Protection:** Launcher shortcuts check active App Lock authentication before presenting note creation views.
@@ -104,8 +112,16 @@ Noma is built around a local-first architecture where device storage (IndexedDB 
 
 - **Local ZIP Backups:** Export database backups (notes, attachments, reminders, tables, charts) into compressed `.zip` files.
 - **Android SAF Integration:** Storage Access Framework tree picker support on Android 10+ for native file destination selection.
-- **Google Drive Cloud Backups:** Export and restore backup archives to/from personal Google Drive (via OAuth 2.0 GIS on Web, native authorization client on Android).
+- **Google Drive Cloud Backups:** Back up and restore archives to/from your own Google Drive (via OAuth 2.0 GIS on Web, native authorization client on Android), with `drive.file` scope — Noma only ever sees its own backup folder. Backups can run manually, on a schedule, or automatically after edits (including a silent background upload on Android).
+- **Multi-Device Sync:** Sync rides the same canonical Drive archive — a pull-merge-push cycle whenever backups run (not real-time sync). Merges are per note by content hash; a conflict never loses text (the older version is kept as a "(conflict copy)"), and deletions propagate via tombstones. Settings never sync.
+- **Encrypted Backups:** The whole Drive archive can be sealed in an AES-256-GCM envelope derived from your passphrase. There is no recovery: lose the passphrase, lose the archive. Older plaintext backups always remain restorable.
 - **Security Exclusions:** Password and pattern credential hashes are explicitly excluded from backup payloads.
+
+### Import
+
+- **Google Keep (Takeout ZIP):** Checklists become real checklists, labels become tags, pinned/archived/trashed states and original timestamps are preserved, and images come through as attachments.
+- **Markdown & Text:** Import individual files, a folder, or a ZIP — front matter is honoured and the parent folder becomes a Noma folder. (Apple Notes has no export file, so Apple notes arrive through this route.)
+- **Additive Only:** Importing never replaces anything, and re-importing the same export is a no-op (dedupe on title + created time). Every run ends with an honest report.
 
 ### Authentication & Cloud Backups
 
@@ -113,13 +129,20 @@ Noma is built around a local-first architecture where device storage (IndexedDB 
 - **Native Android Auth:** Uses `@shardev/capacitor-google-auth` for native Google Sign-In on Android.
 - **Account Isolation:** Database separation (`noma_guest` vs `noma_<uid>`) isolating data between signed-in accounts and guest mode.
 - **Guest Data Migration:** Transfer guest notes into a newly authenticated user database upon sign-in.
-- _Note:_ Firebase is used strictly for authentication and account management. Cloud note storage is performed via explicit Google Drive backup exports rather than background real-time sync.
+- _Note:_ Firebase is used strictly for authentication and account management. Your notes live on your devices and in your own Google Drive backup archive; sync merges through that archive when backups run — it is not a real-time cloud database, and Noma has no server that sees your notes.
+
+### AI (Opt-in)
+
+- **Bring Your Own Key:** AI is off by default and entirely optional. Add your own API key to enable **Summarize** and **Suggest tags** on a note — one tap, one note, one call; nothing is ever sent automatically.
+- **Providers:** Gemini, plus OpenAI-compatible providers — OpenAI, OpenRouter, Groq, Together, DeepSeek, Mistral, or a custom endpoint. Each provider keeps its own key and model, stored only in a per-account on-device record — keys never appear in backups or sync. Locked, template, and trashed notes are excluded.
 
 ### Android
 
 - **Native Mobile Integration:** Built with Capacitor 7 for native Android components and lifecycle handling.
 - **Biometric Lock:** Hardware biometric authentication support (`BIOMETRIC_STRONG`).
-- **Launcher Shortcut:** Static launcher shortcut ("Note") opening deep-link URI `app.noma.notes://new-note`.
+- **Launcher Shortcuts:** Two static shortcuts — **New note** (`app.noma.notes://new-note`) and **Today** (`app.noma.notes://today`, opens today's daily note). Both wait behind App Lock like everything else.
+- **Quick Capture Doors:** Android share target (text and images from any app), the home-screen widget (v2 shows Today plus recent note titles, privacy-gated), and a Quick Settings tile for capture from the QS panel.
+- **Native Feel:** The system back button unwinds the app properly, note rows have swipe actions with undo, a small deliberate haptics vocabulary, a splash that hands off when the first frame paints, optional Material You dynamic colour (Android 12+), and edge-to-edge layout throughout.
 - **SAF File Streaming:** Native Base64 chunked file streaming for Android Storage Access Framework exports.
 
 ### Web/PWA
@@ -127,6 +150,10 @@ Noma is built around a local-first architecture where device storage (IndexedDB 
 - **Progressive Web App:** Offline accessibility powered by a Serwist service worker.
 - **IndexedDB Persistence:** Local storage via Dexie.js.
 - **Production Deployment:** Live web application deployed at [https://mynoma.vercel.app](https://mynoma.vercel.app).
+
+### Settings
+
+- **Eight Categories:** Settings opens on a list — Sync & backup, Security, Appearance, Writing, AI features, Data, Account, About — and every row shows its current state at a glance ("Connected · Scheduled · Daily", your theme's name, "App lock on · Encryption off").
 
 ### Contact & Feedback
 
@@ -140,8 +167,8 @@ Feedback, bug reports, and feature suggestions are welcome:
 
 Noma prioritizes data privacy:
 
-- **Local Data Primary Store:** Notes and attachments reside in your device's IndexedDB storage. Data is not transmitted to external cloud servers unless you sign in to Firebase or initiate a Google Drive backup export.
-- **App Lock vs Encryption:** App Lock acts as a local UI access control barrier (verifying password/pattern hashes locally and triggering biometric prompts). _App Lock does not provide encryption-at-rest._
+- **Local Data Primary Store:** Notes and attachments reside in your device's IndexedDB storage. Data leaves the device only where you point it: to your own Google Drive when backups/sync are on, and — only if you enable AI with your own key — the note text of the one note you tap, to the provider you chose.
+- **App Lock vs Encryption:** App Lock acts as a local UI access control barrier (verifying password/pattern hashes locally and triggering biometric prompts). _App Lock does not provide encryption-at-rest._ Per-Note Lock does: a locked note's body and attachments are AES-256-GCM encrypted, with no recovery by design. Drive backups can likewise be sealed whole-archive with your passphrase.
 - **Backup Security:** App Lock credential hashes are excluded from backup exports to ensure exported files do not contain authentication hashes.
 
 ---
@@ -172,7 +199,7 @@ Noma prioritizes data privacy:
 1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/isit00j/noma.git
+   git clone https://github.com/jubayer00j/noma.git
    cd noma
    ```
 
@@ -273,7 +300,7 @@ noma/
 
 Contributions are welcome! If you encounter an issue or wish to propose an enhancement:
 
-1. Fork the repository (`https://github.com/isit00j/noma`).
+1. Fork the repository (`https://github.com/jubayer00j/noma`).
 2. Create a feature branch (`git checkout -b feature/amazing-feature`).
 3. Commit your changes (`git commit -m 'feat: add amazing feature'`).
 4. Push to the branch (`git push origin feature/amazing-feature`).
@@ -291,4 +318,4 @@ Contributions are welcome! If you encounter an issue or wish to propose an enhan
 
 ## License
 
-No license has been specified yet.
+Noma is released under the [MIT License](LICENSE).

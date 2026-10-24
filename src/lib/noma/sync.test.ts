@@ -191,7 +191,7 @@ function makePayload(partial: Partial<BackupPayload> = {}): BackupPayload {
   return {
     manifest: {
       backupFormatVersion: 2,
-      nomaVersion: "1.0.1",
+      nomaVersion: "1.1.0",
       createdAt: new Date(T0).toISOString(),
       noteCount: 0,
       folderCount: 0,
@@ -562,7 +562,7 @@ describe("backup ZIP sync metadata", () => {
       "manifest.json",
       JSON.stringify({
         backupFormatVersion: 2,
-        nomaVersion: "1.0.1",
+        nomaVersion: "1.1.0",
         createdAt: new Date(T0).toISOString(),
         noteCount: 1,
         folderCount: 0,

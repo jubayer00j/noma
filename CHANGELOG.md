@@ -2,6 +2,19 @@
 
 All notable changes to Noma. Dates are merge dates on `main`.
 
+## v1.1.0 — 2026-10-24
+
+The first feature release since 1.0.1, distilled from the 2026-10-22 → 2026-10-24 programme (PRs #56–#88, detailed in the dated entries below) — and the first release to pass the full device-acceptance checklist (95 rows, all positive) before shipping.
+
+- **Multi-device sync** over the Drive backup archive: pull-merge-push, per-note conflict copies, tombstoned deletes (PR #62).
+- **Encrypted Drive backups**: whole-archive AES-256-GCM with a passphrase-derived key; no recovery by design (PR #67).
+- **Per-note lock**: pattern/PIN/password with real AES-256-GCM on body + attachments — distinct from the App Lock barrier, which stays a UI gate (PR #56).
+- **Quick capture everywhere**: Android share target, home-screen widget, Quick Settings tile, and launcher shortcuts for New note and Today (PRs #63, #79, #80).
+- **Daily notes + templates**, **[[backlinks]]**, and **per-note version history** (local-only, undoable restores) (PRs #64–#66).
+- **Importers** for Google Keep Takeout and Markdown/text — additive only, deduped, honestly reported (PR #68).
+- **Opt-in AI**: Summarize + Suggest tags with your own key — Gemini plus six OpenAI-compatible presets and custom endpoints, each provider keeping its own key on-device (PRs #69, #84–#87).
+- **Native-feel Android**: system back, edge-to-edge, swipe actions, haptics, splash handoff, Material You dynamic colour, privacy-redacted reminder notifications, widget v2 (PRs #70–#80) — plus the Settings restructure into eight categories (PR #81), the keyboard/caret fixes (PRs #82–#83), and the cold-start share-duplicate fix (PR #88).
+
 ## 2026-10-24
 
 ### Cold-start shares no longer create the note twice — PR #88
