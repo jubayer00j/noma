@@ -39,6 +39,7 @@ import { ImportSection } from "@/components/noma/import-section";
 import { AiSection } from "@/components/noma/ai-section";
 import { AppLockSection } from "@/components/noma/app-lock-section";
 import { ThemePicker } from "@/components/noma/theme-picker";
+import { isDynamicColorAvailable } from "@/lib/noma/dynamic-color";
 
 export const Route = createFileRoute("/settings")({
   ssr: false,
@@ -92,6 +93,10 @@ function SettingsPage() {
     setUnlockOpen(true);
   };
   const [confirmSignOut, setConfirmSignOut] = useState(false);
+  // Material You (native-feel #7): the wallpaper-colours row exists only
+  // where the palette bridge reports available (Android 12+ app) — no
+  // dead toggle on web or older Android.
+  const dynamicColorAvailable = isDynamicColorAvailable();
 
   const backups = useLiveQuery(
     () => (db ? db.backups.orderBy("createdAt").reverse().limit(5).toArray() : []),
@@ -255,6 +260,21 @@ function SettingsPage() {
               onCheckedChange={(checked) => void update({ hapticsEnabled: checked })}
             />
           </div>
+
+          {dynamicColorAvailable && (
+            <div className="flex items-center justify-between gap-4">
+              <div className="space-y-0.5">
+                <Label className="text-base font-medium">Wallpaper colours (Material You)</Label>
+                <p className="text-xs text-muted-foreground">
+                  Accent colours drawn from your wallpaper, in the Android app
+                </p>
+              </div>
+              <Switch
+                checked={settings.dynamicColorEnabled}
+                onCheckedChange={(checked) => void update({ dynamicColorEnabled: checked })}
+              />
+            </div>
+          )}
         </Section>
 
         <Section

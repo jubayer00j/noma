@@ -132,6 +132,8 @@ export interface AppSettings {
   sidebarCollapsed: boolean;
   /** Subtle haptic feedback for swipe commits and unlock outcomes (native-feel #4). */
   hapticsEnabled: boolean;
+  /** Material You: retint the accent family from the wallpaper palette (native-feel #7). */
+  dynamicColorEnabled: boolean;
   /** Firebase uid that has completed the first-run welcome on this device. */
   onboardedFor: string | null;
   displayName: string;
@@ -268,6 +270,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   backupIntervalMinutes: 1440,
   sidebarCollapsed: false,
   hapticsEnabled: true,
+  dynamicColorEnabled: false,
   onboardedFor: null,
   displayName: "",
 
