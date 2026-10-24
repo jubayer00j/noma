@@ -4,7 +4,10 @@ import {
   attachCaretAboveKeyboard,
   caretScrollDeltaPx,
   CARET_MARGIN_PX,
+  effectiveKeyboardHeightPx,
+  effectiveVisibleBottomPx,
   keyboardHeightPx,
+  NATIVE_IME_EVENT,
   visibleBottomPx,
   type VisualViewportLike,
 } from "./keyboard-scroll";
@@ -45,6 +48,114 @@ describe("caretScrollDeltaPx", () => {
   it("caret already visible never scrolls", () => {
     expect(caretScrollDeltaPx(400, 500)).toBe(0);
     expect(caretScrollDeltaPx(500 - CARET_MARGIN_PX, 500)).toBe(0);
+  });
+});
+
+describe("effectiveKeyboardHeightPx", () => {
+  it("native height wins when the viewport never shrinks (installed app)", () => {
+    expect(effectiveKeyboardHeightPx(300, 0)).toBe(300);
+  });
+
+  it("visualViewport delta wins on web, where native never fires", () => {
+    expect(effectiveKeyboardHeightPx(0, 300)).toBe(300);
+  });
+
+  it("larger of the two wins if both ever report", () => {
+    expect(effectiveKeyboardHeightPx(200, 300)).toBe(300);
+    expect(effectiveKeyboardHeightPx(300, 200)).toBe(300);
+  });
+
+  it("zero when neither reports", () => {
+    expect(effectiveKeyboardHeightPx(0, 0)).toBe(0);
+  });
+});
+
+describe("effectiveVisibleBottomPx", () => {
+  it("native height: layout height minus the keyboard (viewport stays full)", () => {
+    expect(effectiveVisibleBottomPx(800, 300, { height: 800, offsetTop: 0 })).toBe(500);
+  });
+
+  it("no native height: the visual-viewport bottom (web path)", () => {
+    expect(effectiveVisibleBottomPx(800, 0, { height: 500, offsetTop: 0 })).toBe(500);
+  });
+});
+
+describe("native IME height (installed app)", () => {
+  it("a native event reserves room and scrolls the caret above the keyboard even with a full-height viewport", async () => {
+    const viewport = fakeViewport(800);
+    const scroller = document.createElement("div");
+    const handlers: Record<string, Array<() => void>> = {};
+    const editor = {
+      state: { selection: { from: 0 } },
+      view: { coordsAtPos: () => ({ bottom: 900 - scroller.scrollTop }) },
+      isFocused: true,
+      on: (event: string, fn: () => void) => {
+        (handlers[event] ??= []).push(fn);
+      },
+      off: (event: string, fn: () => void) => {
+        handlers[event] = (handlers[event] ?? []).filter((f) => f !== fn);
+      },
+    } as never;
+    const cleanup = attachCaretAboveKeyboard(editor, scroller, {
+      getViewport: () => viewport,
+      getLayoutHeight: () => 800,
+    });
+    await flush();
+    expect(scroller.style.paddingBottom).toBe("");
+
+    window.dispatchEvent(new CustomEvent(NATIVE_IME_EVENT, { detail: 300 }));
+    await flush();
+    // Real bottom room, not just scroll-padding: the last line must
+    // have somewhere to scroll into.
+    expect(scroller.style.scrollPaddingBottom).toBe("300px");
+    expect(scroller.style.paddingBottom).toBe("300px");
+    // Visible bottom is 800 - 300 = 500; caret at 900 scrolls by 416.
+    expect(scroller.scrollTop).toBe(416);
+
+    // Keyboard closes: the event carries 0, room is removed.
+    window.dispatchEvent(new CustomEvent(NATIVE_IME_EVENT, { detail: 0 }));
+    await flush();
+    expect(scroller.style.scrollPaddingBottom).toBe("");
+    expect(scroller.style.paddingBottom).toBe("");
+
+    cleanup();
+  });
+
+  it("a bridge value present at mount covers the keyboard-already-open case", async () => {
+    const viewport = fakeViewport(800);
+    const { editor } = fakeEditor(100);
+    const scroller = document.createElement("div");
+    (window as unknown as { NomaIme?: { getHeightCssPx: () => number } }).NomaIme = {
+      getHeightCssPx: () => 250,
+    };
+    try {
+      const cleanup = attachCaretAboveKeyboard(editor, scroller, {
+        getViewport: () => viewport,
+        getLayoutHeight: () => 800,
+      });
+      await flush();
+      expect(scroller.style.scrollPaddingBottom).toBe("250px");
+      expect(scroller.style.paddingBottom).toBe("250px");
+      cleanup();
+      expect(scroller.style.scrollPaddingBottom).toBe("");
+      expect(scroller.style.paddingBottom).toBe("");
+    } finally {
+      delete (window as unknown as { NomaIme?: unknown }).NomaIme;
+    }
+  });
+
+  it("a non-numeric native detail is treated as closed, never as a height", async () => {
+    const viewport = fakeViewport(800);
+    const { editor } = fakeEditor(100);
+    const scroller = document.createElement("div");
+    const cleanup = attachCaretAboveKeyboard(editor, scroller, {
+      getViewport: () => viewport,
+      getLayoutHeight: () => 800,
+    });
+    window.dispatchEvent(new CustomEvent(NATIVE_IME_EVENT, { detail: "300" as never }));
+    await flush();
+    expect(scroller.style.paddingBottom).toBe("");
+    cleanup();
   });
 });
 

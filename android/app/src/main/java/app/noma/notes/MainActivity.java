@@ -14,6 +14,7 @@ import java.util.Locale;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import androidx.core.splashscreen.SplashScreen;
+import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
@@ -92,6 +93,32 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    /**
+     * Native IME height (caret-above-keyboard, native seam): with
+     * decorFitsSystemWindows(false) (edge-to-edge, native-feel #2),
+     * adjustResize does not shrink the window — the window stays
+     * full-height behind the keyboard and the app is expected to
+     * consume IME insets itself. Nothing did, so in the installed
+     * app the WebView never shrank, the visualViewport signal the
+     * web layer's caret fix (PR #82) depends on never yielded a
+     * usable keyboard height, and even a scroll delta hard-clamped
+     * at the content's bottom. This bridge is the other half of
+     * that fix: the insets listener below reads the real IME inset
+     * and forwards it to the web layer in CSS px, and this getter
+     * covers the mount-with-keyboard-open case (a note opened while
+     * the keyboard is already up fires no new inset dispatch).
+     * The value is only ever read, never written, from JS — a
+     * volatile int read is thread-safe without a UI-thread marshal.
+     */
+    private volatile int lastImeHeightCssPx;
+
+    public class NomaImeBridge {
+        @JavascriptInterface
+        public int getHeightCssPx() {
+            return lastImeHeightCssPx;
+        }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(GoogleDriveAuthPlugin.class);
@@ -163,6 +190,33 @@ public class MainActivity extends BridgeActivity {
             // web layer reads it synchronously from its theme effect
             // and treats a missing interface as "unavailable".
             webView.addJavascriptInterface(new NomaDynamicColorBridge(), "NomaDynamicColor");
+            // Native IME delivery (see NomaImeBridge): the WebView
+            // itself receives the inset dispatch, and Capacitor sets
+            // no insets listener of its own (verified against the
+            // installed @capacitor/android 7 sources), so this
+            // replaces nothing. The listener only observes — it
+            // returns the insets unchanged, so the splash bar
+            // sequence, system-bar appearance and every other inset
+            // consumer are untouched, and no view's layout is
+            // changed (edge-to-edge CSS safe-areas stay exactly as
+            // they are; the web layer decides what to do with the
+            // height). Physical px are converted to CSS px — the
+            // unit the web layer lays out in — and events fire only
+            // on change, so a steady keyboard never spams JS.
+            webView.addJavascriptInterface(new NomaImeBridge(), "NomaIme");
+            ViewCompat.setOnApplyWindowInsetsListener(webView, (v, insets) -> {
+                int imeBottomPx = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
+                float density = getResources().getDisplayMetrics().density;
+                int cssPx = density > 0 ? Math.round(imeBottomPx / density) : 0;
+                if (cssPx != lastImeHeightCssPx) {
+                    lastImeHeightCssPx = cssPx;
+                    webView.evaluateJavascript(
+                            "window.dispatchEvent(new CustomEvent('noma:ime-height',{detail:" + cssPx + "}))",
+                            null);
+                }
+                return insets;
+            });
+            ViewCompat.requestApplyInsets(webView);
             // Insurance (review, PR #75): the interface registration
             // above runs in the same UI-thread task that queued the
             // page load — before any script can execute — but it leans

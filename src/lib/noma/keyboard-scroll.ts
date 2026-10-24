@@ -19,7 +19,24 @@ import type { Editor } from "@tiptap/react";
  *
  * Pure helpers are unit-tested; the DOM wiring takes injectable viewport
  * getters so tests can drive it with a fake visualViewport (jsdom has none).
+ *
+ * Native seam (installed app only): PR #82 fixed the web case, where the
+ * browser resizes and the visual viewport shrinks — but in the app the
+ * window stays full-height behind the keyboard (decorFitsSystemWindows
+ * (false) defeats adjustResize), so the visualViewport signal never
+ * yields a usable height and a scroll delta alone hard-clamps at the
+ * content's bottom. MainActivity therefore forwards the real IME
+ * inset as a `noma:ime-height` window event (CSS px) plus a
+ * synchronous `window.NomaIme.getHeightCssPx()` getter; this module
+ * treats that height as the authoritative keyboard height and, while
+ * it is open, also gives the scroll content real bottom room equal
+ * to it — so maximum scroll can genuinely lift the document's last
+ * line above the keyboard. The visualViewport path stays as the web
+ * fallback and is never regressed by the native one.
  */
+
+/** Window event the native shell dispatches with the IME height in CSS px. */
+export const NATIVE_IME_EVENT = "noma:ime-height";
 
 /** A viewport shrink smaller than this is chrome/pinch noise, not a keyboard. */
 export const KEYBOARD_MIN_HEIGHT_PX = 100;
@@ -65,6 +82,40 @@ export function caretScrollDeltaPx(
   return overflow > 0 ? overflow : 0;
 }
 
+/** Native IME bridge the installed app registers (absent on web). */
+export interface NomaImeBridgeLike {
+  getHeightCssPx: () => number;
+}
+
+/**
+ * Effective keyboard height: the native IME height when the shell
+ * supplies one, else the visual-viewport shrink. max() keeps the web
+ * fallback intact (native never fires there) and lets the larger
+ * signal win if both ever report.
+ */
+export function effectiveKeyboardHeightPx(nativeHeight: number, viewportDelta: number): number {
+  return Math.max(nativeHeight, viewportDelta);
+}
+
+/**
+ * Bottom edge of the actually visible area when the native shell
+ * reports the keyboard: the layout viewport stays full-height behind
+ * the keyboard, so the visible bottom is the layout height minus the
+ * keyboard — not the visual-viewport bottom (which never shrinks in
+ * the app). Without a native height, the visual-viewport bottom is
+ * correct (web path).
+ */
+export function effectiveVisibleBottomPx(
+  layoutHeight: number,
+  nativeHeight: number,
+  viewport: VisualViewportSnapshot,
+): number {
+  if (nativeHeight > 0) {
+    return layoutHeight - Math.max(nativeHeight, keyboardHeightPx(layoutHeight, viewport));
+  }
+  return visibleBottomPx(viewport);
+}
+
 export interface AttachCaretAboveKeyboardOptions {
   getViewport?: () => VisualViewportLike | null;
   getLayoutHeight?: () => number;
@@ -73,8 +124,10 @@ export interface AttachCaretAboveKeyboardOptions {
 /**
  * Wires an editor to its scroll container (the note surface). While the
  * editor is focused, keeps the caret line above the keyboard. Returns a
- * cleanup that removes listeners and clears the reserved padding. No-ops
- * where there is no visualViewport (desktop web) or no keyboard.
+ * cleanup that removes listeners and clears the reserved room. No-ops
+ * where there is no visualViewport and no native IME height (desktop
+ * web with no keyboard) — and never scrolls when the caret is already
+ * visible, so manual scrolling is never fought.
  */
 export function attachCaretAboveKeyboard(
   editor: Editor,
@@ -86,26 +139,61 @@ export function attachCaretAboveKeyboard(
   const getLayoutHeight = options.getLayoutHeight ?? (() => window.innerHeight);
 
   let raf = 0;
+  // Native IME height in CSS px (installed app only; 0 = absent/closed).
+  let nativeHeight = 0;
 
-  const applyKeyboardPadding = () => {
+  // Mount-with-keyboard-open case: a note opened while the keyboard
+  // is already up fires no new inset dispatch, so read the bridge's
+  // last value once. A missing or throwing bridge is treated as
+  // absent; the visualViewport path remains.
+  const readNativeHeight = () => {
+    try {
+      const bridge = (window as unknown as { NomaIme?: NomaImeBridgeLike }).NomaIme;
+      const value = bridge?.getHeightCssPx?.();
+      if (typeof value === "number" && value > 0) nativeHeight = Math.round(value);
+    } catch {
+      // Absent or unusable bridge — visualViewport path carries on.
+    }
+  };
+
+  const onNativeIme = (event: Event) => {
+    const value = (event as CustomEvent<number>).detail;
+    nativeHeight = typeof value === "number" && value > 0 ? Math.round(value) : 0;
+    schedule();
+  };
+
+  const applyKeyboardRoom = () => {
     const viewport = getViewport();
-    const height = viewport ? keyboardHeightPx(getLayoutHeight(), viewport) : 0;
+    const layoutHeight = getLayoutHeight();
+    const height = effectiveKeyboardHeightPx(
+      nativeHeight,
+      viewport ? keyboardHeightPx(layoutHeight, viewport) : 0,
+    );
     scroller.style.scrollPaddingBottom = height > 0 ? `${height}px` : "";
+    // Real bottom room, on top of the editor's own pb-32: without it
+    // a scroll delta hard-clamps at the content's bottom and the
+    // document's last line can never rise above the keyboard.
+    scroller.style.paddingBottom = height > 0 ? `${height}px` : "";
   };
 
   const ensureCaretVisible = () => {
     if (!editor.isFocused) return;
     const viewport = getViewport();
-    if (!viewport) return;
+    if (!viewport && nativeHeight === 0) return;
+    const layoutHeight = getLayoutHeight();
+    const visibleBottom =
+      viewport != null
+        ? effectiveVisibleBottomPx(layoutHeight, nativeHeight, viewport)
+        : layoutHeight - nativeHeight;
     const rect = editor.view.coordsAtPos(editor.state.selection.from);
-    const delta = caretScrollDeltaPx(rect.bottom, visibleBottomPx(viewport));
+    const delta = caretScrollDeltaPx(rect.bottom, visibleBottom);
     if (delta > 0) scroller.scrollTop += delta;
   };
 
   const schedule = () => {
     cancelAnimationFrame(raf);
     raf = requestAnimationFrame(() => {
-      applyKeyboardPadding();
+      applyKeyboardRoom();
       ensureCaretVisible();
     });
   };
@@ -113,17 +201,21 @@ export function attachCaretAboveKeyboard(
   const viewport = getViewport();
   viewport?.addEventListener("resize", schedule);
   viewport?.addEventListener("scroll", schedule);
+  window.addEventListener(NATIVE_IME_EVENT, onNativeIme);
   editor.on("selectionUpdate", schedule);
   editor.on("update", schedule);
   // The keyboard may already be open when the editor mounts (tap-to-edit).
+  readNativeHeight();
   schedule();
 
   return () => {
     cancelAnimationFrame(raf);
     viewport?.removeEventListener("resize", schedule);
     viewport?.removeEventListener("scroll", schedule);
+    window.removeEventListener(NATIVE_IME_EVENT, onNativeIme);
     editor.off("selectionUpdate", schedule);
     editor.off("update", schedule);
     scroller.style.scrollPaddingBottom = "";
+    scroller.style.paddingBottom = "";
   };
 }
