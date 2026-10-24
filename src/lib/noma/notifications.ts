@@ -1,7 +1,8 @@
 import { Capacitor } from "@capacitor/core";
 import { LocalNotifications } from "@capacitor/local-notifications";
 import type { NomaDatabase } from "./db";
-import type { Reminder } from "./types";
+import { requestNoteOpen } from "./notification-open";
+import type { Note, Reminder } from "./types";
 
 export interface NotificationCapability {
   supported: boolean;
@@ -85,6 +86,110 @@ export async function requestNotificationPermission(): Promise<boolean> {
   return false;
 }
 
+/* ---------------- Notification text (native-feel #8) ---------------- */
+
+export const REMINDERS_CHANNEL_ID = "noma-reminders";
+
+const GENERIC_NOTIFICATION_TITLE = "Reminder from Noma";
+const GENERIC_NOTIFICATION_BODY = "You have a scheduled note reminder.";
+
+/**
+ * The minimum note data notification text is allowed to see: a title and
+ * whether the note is per-note locked. Never the body — see the privacy
+ * requirement on reminderNotificationText.
+ */
+export interface NoteNotificationSnapshot {
+  title: string;
+  locked: boolean;
+}
+
+/**
+ * Builds the snapshot for a note (undefined when there is no note). The
+ * lock flag is the note list UI's own check — note-list.tsx treats a note
+ * as locked iff it carries a lock record — and there is deliberately no
+ * second definition of "locked" here.
+ */
+export function notificationSnapshotForNote(
+  note: Note | null | undefined,
+): NoteNotificationSnapshot | undefined {
+  if (!note) return undefined;
+  return { title: note.title, locked: Boolean(note.lock) };
+}
+
+const reminderTimeFormat = new Intl.DateTimeFormat(undefined, {
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+  hour: "numeric",
+  minute: "2-digit",
+});
+
+/**
+ * The reminder time in device locale, e.g. "Fri, 24 Oct, 9:30 AM".
+ * (The reminder dialog has no importable formatter — it works with date
+ * inputs — so this follows daily.ts / version-history-dialog's
+ * Intl.DateTimeFormat precedent instead.)
+ */
+export function formatReminderTime(scheduledAt: number): string {
+  return reminderTimeFormat.format(new Date(scheduledAt));
+}
+
+/**
+ * PRIVACY REQUIREMENT (unchanged in substance from the original generic
+ * text): note CONTENT never appears in notification text. Native-feel #8
+ * refines only which metadata may show:
+ * - Unlocked note → its title (metadata the app itself shows in lists)
+ *   plus the reminder time.
+ * - Locked note, or no note at all → the original generic pair, verbatim:
+ *   a locked note's title never reaches the phone's lock screen.
+ */
+export function reminderNotificationText(
+  note: NoteNotificationSnapshot | undefined,
+  reminder: Reminder,
+): { title: string; body: string } {
+  if (note && !note.locked) {
+    const title = note.title.trim() || "Untitled note";
+    return { title, body: `Reminder · ${formatReminderTime(reminder.scheduledAt)}` };
+  }
+  return { title: GENERIC_NOTIFICATION_TITLE, body: GENERIC_NOTIFICATION_BODY };
+}
+
+/* ---------------- Reminders channel (native-feel #8) ---------------- */
+
+let remindersChannelEnsured = false;
+
+/**
+ * Creates the "Note reminders" channel, at most once per app session.
+ * (Android also treats re-creating an existing channel as a no-op, but
+ * there is no reason to pay the bridge call on every reminder.) A failure
+ * is swallowed: reminders still post — to the plugin's default channel
+ * rather than not at all.
+ */
+export async function ensureRemindersChannel(): Promise<void> {
+  if (remindersChannelEnsured) return;
+  remindersChannelEnsured = true;
+  if (!Capacitor.isNativePlatform()) return;
+  try {
+    await LocalNotifications.createChannel({
+      id: REMINDERS_CHANNEL_ID,
+      name: "Note reminders",
+      description: "Reminders you set on notes",
+      // Importance high: heads-up + sound. A reminder that whispers is a
+      // reminder missed. Android locks importance after creation, so
+      // this is chosen deliberately; the user can turn it down in the
+      // system channel settings at any time.
+      importance: 4,
+    });
+  } catch (e) {
+    console.warn("Failed to create the reminders notification channel:", e);
+  }
+}
+
+/** Test-only: forget that the channel was ensured this session. */
+export function resetRemindersChannelForTests(): void {
+  remindersChannelEnsured = false;
+}
+
 // In-memory web timer store for active session scheduling on web
 const webTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const MAX_TIMEOUT_MS = 2147483647; // 2^31 - 1 max 32-bit signed int for setTimeout
@@ -100,7 +205,7 @@ function hashNotificationId(reminderId: string): number {
   return (hash >>> 0) % 2147483647 || 1;
 }
 
-function scheduleWebTimer(reminder: Reminder) {
+function scheduleWebTimer(reminder: Reminder, note?: NoteNotificationSnapshot) {
   if (webTimers.has(reminder.id)) {
     clearTimeout(webTimers.get(reminder.id));
     webTimers.delete(reminder.id);
@@ -115,19 +220,30 @@ function scheduleWebTimer(reminder: Reminder) {
     webTimers.delete(reminder.id);
     const remaining = reminder.scheduledAt - Date.now();
     if (remaining > 1000) {
-      scheduleWebTimer(reminder);
+      scheduleWebTimer(reminder, note);
     } else {
       if (
         typeof window !== "undefined" &&
         "Notification" in window &&
         Notification.permission === "granted"
       ) {
+        const text = reminderNotificationText(note, reminder);
         try {
-          new Notification("Reminder from Noma", {
-            body: "You have a scheduled note reminder.",
+          const notification = new Notification(text.title, {
+            body: text.body,
             icon: "/noma-icon-192.png",
             tag: reminder.id,
           });
+          // A click lands on the same pending-open path a native tap feeds.
+          notification.onclick = () => {
+            try {
+              window.focus();
+            } catch {
+              /* focus is best-effort */
+            }
+            requestNoteOpen(reminder.noteId);
+            notification.close();
+          };
         } catch (e) {
           console.warn("Failed to deliver Web Notification:", e);
         }
@@ -138,7 +254,10 @@ function scheduleWebTimer(reminder: Reminder) {
   webTimers.set(reminder.id, timer);
 }
 
-export async function scheduleNotification(reminder: Reminder): Promise<number | undefined> {
+export async function scheduleNotification(
+  reminder: Reminder,
+  note?: NoteNotificationSnapshot,
+): Promise<number | undefined> {
   const isNative = Capacitor.isNativePlatform();
   const notifId = reminder.notificationId ?? hashNotificationId(reminder.id);
 
@@ -148,13 +267,11 @@ export async function scheduleNotification(reminder: Reminder): Promise<number |
   }
 
   const scheduledDate = new Date(reminder.scheduledAt);
-
-  // PRIVACY REQUIREMENT: Do not leak sensitive note content in notification text.
-  const title = "Reminder from Noma";
-  const body = "You have a scheduled note reminder.";
+  const text = reminderNotificationText(note, reminder);
 
   if (isNative) {
     try {
+      await ensureRemindersChannel();
       // Cancel any prior notification with same ID first
       await LocalNotifications.cancel({ notifications: [{ id: notifId }] }).catch(() => {});
 
@@ -163,8 +280,9 @@ export async function scheduleNotification(reminder: Reminder): Promise<number |
           notifications: [
             {
               id: notifId,
-              title,
-              body,
+              title: text.title,
+              body: text.body,
+              channelId: REMINDERS_CHANNEL_ID,
               schedule: { at: scheduledDate },
               extra: { noteId: reminder.noteId, reminderId: reminder.id },
             },
@@ -178,7 +296,7 @@ export async function scheduleNotification(reminder: Reminder): Promise<number |
   }
 
   // Web/PWA Implementation
-  scheduleWebTimer(reminder);
+  scheduleWebTimer(reminder, note);
 
   return notifId;
 }
@@ -199,17 +317,29 @@ export async function rehydrateReminders(db: NomaDatabase): Promise<void> {
       .filter((r) => r.status === "pending" && r.scheduledAt > now && r.alertType !== "phone-alarm")
       .toArray();
 
+    // One bulk fetch for every referenced note: the text builder needs each
+    // note's title + lock state, never its content.
+    const noteIds = [...new Set(pendingReminders.map((r) => r.noteId))];
+    const fetchedNotes = noteIds.length ? await db.notes.bulkGet(noteIds) : [];
+    const snapshots = new Map<string, NoteNotificationSnapshot | undefined>();
+    noteIds.forEach((noteId, index) => {
+      snapshots.set(noteId, notificationSnapshotForNote(fetchedNotes[index]));
+    });
+
     if (isNative) {
+      await ensureRemindersChannel();
       for (const reminder of pendingReminders) {
         const notifId = reminder.notificationId ?? hashNotificationId(reminder.id);
         const scheduledDate = new Date(reminder.scheduledAt);
+        const text = reminderNotificationText(snapshots.get(reminder.noteId), reminder);
         await LocalNotifications.cancel({ notifications: [{ id: notifId }] }).catch(() => {});
         await LocalNotifications.schedule({
           notifications: [
             {
               id: notifId,
-              title: "Reminder from Noma",
-              body: "You have a scheduled note reminder.",
+              title: text.title,
+              body: text.body,
+              channelId: REMINDERS_CHANNEL_ID,
               schedule: { at: scheduledDate },
               extra: { noteId: reminder.noteId, reminderId: reminder.id },
             },
@@ -218,7 +348,7 @@ export async function rehydrateReminders(db: NomaDatabase): Promise<void> {
       }
     } else {
       for (const reminder of pendingReminders) {
-        scheduleWebTimer(reminder);
+        scheduleWebTimer(reminder, snapshots.get(reminder.noteId));
       }
     }
   } catch (e) {

@@ -71,6 +71,7 @@ import { useAppLock } from "@/lib/noma/AppLockContext";
 import { usePendingShortcut } from "@/lib/noma/shortcut";
 import { registerWorkspaceBackHandler, resolveWorkspaceBackStep } from "@/lib/noma/system-back";
 import { usePendingCapture, type CaptureRequest } from "@/lib/noma/capture";
+import { findNoteToOpen, usePendingNoteOpen } from "@/lib/noma/notification-open";
 import { initShareTarget } from "@/lib/noma/share-target";
 import { saveImageAttachment } from "@/lib/noma/media";
 import {
@@ -617,6 +618,7 @@ export function Workspace() {
   const { isLocked, isLockStateResolving } = useAppLock();
   const { action: shortcutAction, consumeShortcut } = usePendingShortcut();
   const { request: captureRequest, consumeCapture } = usePendingCapture();
+  const { request: noteOpenRequest, consume: consumeNoteOpen } = usePendingNoteOpen();
 
   // Wire the share-target doors (Android plugin + web boot checks) into the
   // capture queue once; requests wait there until the gate below consumes them.
@@ -938,6 +940,28 @@ export function Workspace() {
     consumeCapture,
     handleShareCapture,
     handleNewNote,
+  ]);
+
+  // Consume reminder-tap open requests (native-feel #8) under the same
+  // gate, plus one more condition: the notes query must have resolved, so
+  // a cold-start tap can't race the first load and miss its note. A
+  // per-note-locked note lands on its unlock gate via openNote; a note
+  // that was deleted or trashed resolves to a plain app open — the
+  // request is consumed and nothing else happens.
+  useEffect(() => {
+    if (!noteOpenRequest || !db || notes === undefined || isLockStateResolving || isLocked) return;
+    consumeNoteOpen(noteOpenRequest.id);
+    const note = findNoteToOpen(allNotes, noteOpenRequest.noteId);
+    if (note) openNote(note);
+  }, [
+    noteOpenRequest,
+    db,
+    notes,
+    isLockStateResolving,
+    isLocked,
+    consumeNoteOpen,
+    allNotes,
+    openNote,
   ]);
 
   // Keyboard shortcuts.
