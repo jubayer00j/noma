@@ -10,6 +10,7 @@ import { syncSystemBarsToTheme } from "@/lib/noma/system-bars";
 import { syncDynamicColor } from "@/lib/noma/dynamic-color";
 import { setHapticsEnabled } from "@/lib/noma/haptics";
 import { signalSplashReady } from "@/lib/noma/splash-handoff";
+import { initNotificationOpenListener } from "@/lib/noma/notification-open";
 import { useAppLock } from "@/lib/noma/AppLockContext";
 import { LockScreen } from "./lock-screen";
 
@@ -81,6 +82,16 @@ export function AppGate({ children }: { children: ReactNode }) {
       cancelAnimationFrame(outer);
       cancelAnimationFrame(inner);
     };
+  }, []);
+
+  // Reminder deep links (native-feel #8): register the one app-shell
+  // notification-tap listener. A tap becomes a pending note-open request
+  // that the workspace consumes once the DB is ready and the App Lock is
+  // open. Cold-start taps are retained by the bridge and replayed to this
+  // registration, so registering here — AppGate mounts on every start —
+  // covers them. Native-only and register-once inside the module.
+  useEffect(() => {
+    initNotificationOpenListener();
   }, []);
 
   if (auth.configured && auth.loading) {

@@ -1,5 +1,9 @@
 import { type NomaDatabase, newId } from "./db";
-import { cancelNotification, scheduleNotification } from "./notifications";
+import {
+  cancelNotification,
+  notificationSnapshotForNote,
+  scheduleNotification,
+} from "./notifications";
 import { countWords, htmlToPlainText, sanitizeHtml } from "./sanitize";
 import { cleanupOrphanedAttachments } from "./media";
 import { recordTombstone } from "./sync";
@@ -384,7 +388,8 @@ export async function setNoteReminder(
     };
     const { scheduled } = applyAlertFields(updated, options);
     if (scheduled) {
-      const notifId = await scheduleNotification(updated);
+      const note = await db.notes.get(noteId);
+      const notifId = await scheduleNotification(updated, notificationSnapshotForNote(note));
       if (notifId !== undefined) updated.notificationId = notifId;
     }
     await db.reminders.put(updated);
@@ -403,7 +408,8 @@ export async function setNoteReminder(
 
   const { scheduled } = applyAlertFields(reminder, options);
   if (scheduled) {
-    const notifId = await scheduleNotification(reminder);
+    const note = await db.notes.get(noteId);
+    const notifId = await scheduleNotification(reminder, notificationSnapshotForNote(note));
     if (notifId !== undefined) reminder.notificationId = notifId;
   }
 
@@ -457,7 +463,8 @@ export async function updateReminderStatus(
     // Phone alarms live in the external Clock app; reopening only restores the
     // Noma reminder row — it cannot recreate the Clock alarm.
     if (existing.scheduledAt > now && existing.alertType !== "phone-alarm") {
-      notifId = await scheduleNotification(updatedReminder);
+      const note = await db.notes.get(existing.noteId);
+      notifId = await scheduleNotification(updatedReminder, notificationSnapshotForNote(note));
     }
 
     await db.transaction("rw", db.reminders, db.notes, async () => {

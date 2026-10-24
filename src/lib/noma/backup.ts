@@ -10,7 +10,11 @@ import {
 import { type NomaDatabase, newId } from "./db";
 import { cleanupOrphanedReminders } from "./notes";
 import { cleanupOrphanedAttachments } from "./media";
-import { cancelNotification, scheduleNotification } from "./notifications";
+import {
+  cancelNotification,
+  notificationSnapshotForNote,
+  scheduleNotification,
+} from "./notifications";
 import { sanitizeHtml } from "./sanitize";
 import { getDeviceId } from "./sync";
 import {
@@ -630,8 +634,19 @@ export async function applyBackup(
     )
     .toArray();
 
+  // One bulk fetch for every referenced note: notification text needs each
+  // note's title + lock state, never its content.
+  const restoredNoteIds = [...new Set(activeReminders.map((r) => r.noteId))];
+  const restoredNotes = restoredNoteIds.length ? await db.notes.bulkGet(restoredNoteIds) : [];
+  const restoredSnapshots = new Map(
+    restoredNoteIds.map((noteId, index) => [
+      noteId,
+      notificationSnapshotForNote(restoredNotes[index]),
+    ]),
+  );
+
   for (const reminder of activeReminders) {
-    const notifId = await scheduleNotification(reminder);
+    const notifId = await scheduleNotification(reminder, restoredSnapshots.get(reminder.noteId));
     if (notifId !== undefined && notifId !== reminder.notificationId) {
       await db.reminders.update(reminder.id, { notificationId: notifId });
     }
