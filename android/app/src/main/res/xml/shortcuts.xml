@@ -12,4 +12,16 @@
             android:targetClass="app.noma.notes.MainActivity"
             android:data="app.noma.notes://new-note" />
     </shortcut>
+    <shortcut
+        android:shortcutId="today"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_today_short"
+        android:shortcutLongLabel="@string/shortcut_today_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="app.noma.notes"
+            android:targetClass="app.noma.notes.MainActivity"
+            android:data="app.noma.notes://today" />
+    </shortcut>
 </shortcuts>

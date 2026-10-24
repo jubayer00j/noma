@@ -6,6 +6,7 @@ import {
   type CaptureRequest,
   type RawSharePayload,
 } from "./capture";
+import { checkWebShortcutParam } from "./shortcut";
 
 /**
  * Bridges the two share-target doors into the capture queue (capture.ts):
@@ -192,6 +193,9 @@ export function initShareTarget(): void {
 
   checkWebShareBoot();
   checkPwaShortcutParam();
+  // The manifest "Today" shortcut lands in the pending-shortcut slot
+  // (navigation, not captured content) via its own ?shortcut= param.
+  checkWebShortcutParam();
 
   if (!isAndroidNative()) return;
   void pullNativeShare();

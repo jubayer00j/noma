@@ -4,8 +4,10 @@
     <string name="title_activity_main">Noma</string>
     <string name="package_name">app.noma.notes</string>
     <string name="custom_url_scheme">app.noma.notes</string>
-    <string name="shortcut_note_short">Note</string>
-    <string name="shortcut_note_long">Note</string>
+    <string name="shortcut_note_short">New note</string>
+    <string name="shortcut_note_long">Create a new note</string>
+    <string name="shortcut_today_short">Today</string>
+    <string name="shortcut_today_long">Open today\'s note</string>
     <string name="widget_label">New note</string>
     <string name="widget_caption">Capture a thought</string>
     <string name="widget_description">Quickly capture a new note in Noma</string>

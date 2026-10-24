@@ -43,6 +43,19 @@
           "type": "image/png"
         }
       ]
+    },
+    {
+      "name": "Today",
+      "short_name": "Today",
+      "description": "Open today's note in Noma",
+      "url": "/?shortcut=today",
+      "icons": [
+        {
+          "src": "/noma-icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
     }
   ]
 }
