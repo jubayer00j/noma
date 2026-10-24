@@ -20,8 +20,8 @@ import type { Note } from "./types";
  * backup-encryption record.
  */
 
-export const GEMINI_MODEL = "gemini-2.5-flash";
-export const GEMINI_MODEL_LABEL = "Gemini 2.5 Flash (free tier)";
+export const GEMINI_MODEL = "gemini-3.5-flash-lite";
+export const GEMINI_MODEL_LABEL = "Gemini 3.5 Flash-Lite (free tier)";
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
 
 /** Prompt input budget: very long notes are middle-truncated (head+tail kept). */

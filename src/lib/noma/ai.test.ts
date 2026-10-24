@@ -352,7 +352,7 @@ describe("Gemini client", () => {
     expect(url).toBe(
       `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
     );
-    expect(GEMINI_MODEL).toBe("gemini-2.5-flash");
+    expect(GEMINI_MODEL).toBe("gemini-3.5-flash-lite");
     expect(init.method).toBe("POST");
     const headers = init.headers as Record<string, string>;
     expect(headers["x-goog-api-key"]).toBe(API_KEY);
