@@ -4,6 +4,11 @@ All notable changes to Noma. Dates are merge dates on `main`.
 
 ## 2026-10-24
 
+### Caret stays above the keyboard — PR #82
+- Typing in a long note could slide the current line underneath the on-screen keyboard, leaving you typing blind. Nothing in the app watched the visual viewport, and ProseMirror's built-in caret scrolling measures against the layout viewport, which doesn't shrink the way the visual viewport does when the keyboard opens — so by its math the caret was "visible" while it sat behind the keyboard (the one case PR #76 left as verify-on-device).
+- The editor now listens to the visual viewport while a note is open in edit mode: it reserves the keyboard height on the note surface and, on every selection change and viewport change, scrolls the surface by exactly the overlap when the caret sits below the visible bottom — never otherwise, so manual scrolling is never fought. The read view, dialogs, and workspace scroll preservation are untouched.
+- Device-only proof: long note → tap at the very end → keyboard opens → type several lines → the current line never disappears under the keyboard; same for a mid-document caret, and the formatting toolbar stays reachable throughout.
+
 ### Settings restructure — PR #81
 - Settings is no longer one long scroll. It opens on a list of eight categories — **Sync & backup, Security, Appearance, Writing, AI features, Data, Account, About** — and every row shows its current state as a summary ("Connected · Scheduled · Daily", "App lock on · Encryption off", your theme's name, "17px · 1.7"), so most visits end at a glance. Tapping a row opens its sub-screen; the header and the Android back button walk you back to the list first (a new step in the system-back priority: dialogs → sub-screen → leave Settings).
 - Everything is the same blocks, rehomed — nothing about how any setting behaves has changed. Backup encryption moved out of the Drive card into **Security**, next to App Lock where it belongs; enabling it there still seals the current Drive backup immediately, via the same window-event idiom the cards already used to talk to each other. Restore and the importers live under **Data**; the writing sliders got their own **Writing** screen, out of Appearance.
