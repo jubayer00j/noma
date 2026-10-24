@@ -38,7 +38,10 @@ export type AiErrorKind =
   | "rate-limited"
   | "offline"
   | "bad-response"
-  | "empty";
+  | "empty"
+  | "model-unavailable"
+  | "transient"
+  | "api-error";
 
 /** One calm sentence per failure kind — shown verbatim in the UI. */
 export const AI_ERROR_MESSAGES: Record<AiErrorKind, string> = {
@@ -48,6 +51,10 @@ export const AI_ERROR_MESSAGES: Record<AiErrorKind, string> = {
   offline: "You're offline — AI needs a connection.",
   "bad-response": "Gemini sent back something Noma couldn't read. Try again.",
   empty: "Gemini didn't return anything for this note. Try again.",
+  "model-unavailable":
+    "That Gemini model isn't available through the API right now. Try again later.",
+  transient: "Gemini is busy right now — try again in a little while.",
+  "api-error": "Gemini couldn't complete that request. Try again.",
 };
 
 export class AiError extends Error {
@@ -281,10 +288,53 @@ interface GenerateResult {
 }
 
 /**
+ * Google's error envelope, when a failed call carries one. Only the
+ * message string is ever surfaced — never the key, the URL, or the
+ * rest of the body. Returns null when there is nothing usable: a
+ * non-JSON body, no error message, or a message that echoes the key
+ * itself (defensive — Google never does, but a surfaced message must
+ * never become a key leak). Long messages are capped so the UI keeps
+ * one calm line, not a pasted stack.
+ */
+async function readGoogleErrorMessage(
+  response: Response,
+  key: string,
+): Promise<string | null> {
+  let text: string;
+  try {
+    text = await response.text();
+  } catch {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const error = (parsed as { error?: unknown } | null)?.error;
+  const message =
+    typeof error === "string" ? error : (error as { message?: unknown } | null)?.message;
+  if (typeof message !== "string") return null;
+  const clean = message.trim();
+  if (!clean) return null;
+  if (key && clean.includes(key)) return null;
+  return clean.length > 240 ? `${clean.slice(0, 240)}…` : clean;
+}
+
+/**
  * One generateContent call. Endpoint + auth per Google's official API
  * reference: POST /v1beta/models/<model>:generateContent with the key
  * in the `x-goog-api-key` header; the reply text lives at
  * candidates[0].content.parts[].text.
+ *
+ * Error mapping, in order: network failure → offline; 429 →
+ * rate-limited; 400/401/403 → invalid-key; 404 → model-unavailable
+ * (named, so a retired model id is diagnosable instead of generic);
+ * 500/502/503 → transient; any other non-OK status → Google's own
+ * error message when one exists, else the generic bad-response line.
+ * A 200 with the wrong shape stays bad-response — that genuinely is
+ * unreadable.
  */
 async function generateContent(apiKey: string, prompt: string, model: string): Promise<GenerateResult> {
   const key = apiKey.trim();
@@ -306,7 +356,25 @@ async function generateContent(apiKey: string, prompt: string, model: string): P
   if (response.status === 400 || response.status === 401 || response.status === 403) {
     throw new AiError("invalid-key");
   }
-  if (!response.ok) throw new AiError("bad-response");
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new AiError(
+        "model-unavailable",
+        `The Gemini model "${model}" isn't available through the API right now. Try again later, or report the model name if it keeps failing.`,
+      );
+    }
+    if (response.status === 500 || response.status === 502 || response.status === 503) {
+      throw new AiError("transient");
+    }
+    const apiMessage = await readGoogleErrorMessage(response, key);
+    if (apiMessage) {
+      throw new AiError(
+        "api-error",
+        `Gemini couldn't complete that request: ${apiMessage}`,
+      );
+    }
+    throw new AiError("bad-response");
+  }
   let data: unknown;
   try {
     data = await response.json();
