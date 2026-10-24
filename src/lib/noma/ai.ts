@@ -17,14 +17,20 @@ import type { Note } from "./types";
  * client is the named phase-2 follow-up; Anthropic is reachable
  * meanwhile through OpenRouter.
  *
- * The key lives in a per-account localStorage record (mirroring the
- * Drive connection and backup-encryption records). It NEVER enters
+ * The keys live in a per-account localStorage record (mirroring the
+ * Drive connection and backup-encryption records). They NEVER enter
  * AppSettings: `collectBackup` writes the settings record into the
  * backup ZIP, so a key stored there would ride into Drive backups.
- * localStorage keeps it out of backups, out of sync, off other
- * devices — and `disconnectDrive` clears it on sign-out, alongside the
- * backup-encryption record. The endpoint URL is not secret; only keys
- * are asserted absent from backups.
+ * localStorage keeps them out of backups, out of sync, off other
+ * devices — and `disconnectDrive` clears the record on sign-out,
+ * alongside the backup-encryption record. The endpoint URL is not
+ * secret; only keys are asserted absent from backups.
+ *
+ * Each provider preset keeps its OWN slot (key + model) in the one
+ * record: switching providers can never send the previous provider's
+ * key to the new one, and switching back restores that provider's key
+ * untouched. Records written in the single-key format (PR #86) are
+ * migrated losslessly on read — see normalizeAiRecord.
  */
 
 export const GEMINI_MODEL = "gemini-3.5-flash-lite";
@@ -143,6 +149,29 @@ export function aiProviderSettingsChanged(
   );
 }
 
+/**
+ * True when a provider slot's draft differs from its saved slot —
+ * the per-slot form of the dirty check, used by Settings for the
+ * selected provider. Keys compare trimmed (calls trim anyway),
+ * models compare trimmed with the preset default standing in for an
+ * unset model (a slot that never stored a model IS on the default),
+ * endpoints compare normalized. A missing slot and an empty slot are
+ * the same thing.
+ */
+export function aiSlotChanged(
+  saved: AiProviderSlot | undefined,
+  candidate: AiProviderSlot | undefined,
+  defaultModel = "",
+): boolean {
+  const savedKey = (saved?.apiKey ?? "").trim();
+  const candidateKey = (candidate?.apiKey ?? "").trim();
+  if (savedKey !== candidateKey) return true;
+  const savedModel = (saved?.model ?? "").trim() || defaultModel;
+  const candidateModel = (candidate?.model ?? "").trim() || defaultModel;
+  if (savedModel !== candidateModel) return true;
+  return normalizeBaseUrl(saved?.baseUrl) !== normalizeBaseUrl(candidate?.baseUrl);
+}
+
 /** Prompt input budget: very long notes are middle-truncated (head+tail kept). */
 export const AI_MAX_INPUT_CHARS = 24_000;
 
@@ -188,11 +217,10 @@ export class AiError extends Error {
 /* ---------------- Local record (per account, this device only) ---------------- */
 
 /**
- * The whole AI configuration unit: the enable flag, the key, and —
- * for OpenAI-compatible providers — the endpoint + model. All live
- * here, never in AppSettings, so nothing AI-related can leak into a
- * backup or a sync payload. Records written before providers existed
- * carry no `provider` field and dispatch as Gemini (see generateText).
+ * The flat, effective shape every AI call consumes: the enable flag,
+ * the ACTIVE provider's key, and — for OpenAI-compatible providers —
+ * its endpoint + model. This is a projection of the stored record
+ * (see projectAiSettings), never the storage format itself.
  */
 export interface AiSettings {
   enabled: boolean;
@@ -201,6 +229,127 @@ export interface AiSettings {
   provider?: AiProvider;
   /** OpenAI-compatible endpoint; ignored for Gemini. Not secret — only keys are. */
   baseUrl?: string;
+}
+
+/**
+ * One provider preset's saved state: its own key, its chosen model,
+ * and — for the "custom" slot only — its endpoint URL (a named
+ * preset's endpoint is a constant, not stored). Nothing here ever
+ * leaves the device.
+ */
+export interface AiProviderSlot {
+  apiKey: string;
+  model?: string;
+  baseUrl?: string;
+}
+
+/**
+ * The stored record: ONE per account, holding the enable flag, which
+ * preset is active, and a slot per preset id ("gemini", each
+ * OPENAI_PRESETS id, "custom"). Per-slot keys are what make provider
+ * switching safe: a provider only ever receives its own key.
+ */
+export interface AiRecord {
+  enabled: boolean;
+  activePreset: string;
+  providers: Record<string, AiProviderSlot>;
+}
+
+/** Every preset id that can own a slot: "gemini" plus the preset table. */
+const SLOT_IDS: string[] = ["gemini", ...OPENAI_PRESETS.map((preset) => preset.id)];
+
+function cleanSlot(raw: unknown): AiProviderSlot | null {
+  if (!raw || typeof raw !== "object") return null;
+  const slot = raw as Partial<AiProviderSlot>;
+  if (typeof slot.apiKey !== "string") return null;
+  return {
+    apiKey: slot.apiKey,
+    ...(typeof slot.model === "string" && slot.model ? { model: slot.model } : {}),
+    ...(typeof slot.baseUrl === "string" && slot.baseUrl
+      ? { baseUrl: normalizeBaseUrl(slot.baseUrl) }
+      : {}),
+  };
+}
+
+/**
+ * Any stored value → the canonical record, or null when there is
+ * nothing usable. Two input formats:
+ *
+ * - Current: { enabled, activePreset, providers: { <presetId>: slot } }.
+ *   Unknown slot ids are dropped; an unknown activePreset falls back
+ *   to "gemini".
+ * - Legacy (PRs #69–#86): the flat { enabled, apiKey, provider?,
+ *   baseUrl?, model? } single-key shape. It migrates losslessly: the
+ *   key/model land in the slot for its provider ("gemini", or
+ *   resolveAiPreset for OpenAI-compatible — an unmatched endpoint
+ *   becomes "custom" and keeps its URL), and that slot becomes the
+ *   active one. An unknown provider value means Gemini, as before.
+ *
+ * A legacy record with no string key is not a record at all (the old
+ * reader returned null for it too). Normalizing a normalized record
+ * returns it unchanged — migration is idempotent.
+ */
+export function normalizeAiRecord(raw: unknown): AiRecord | null {
+  if (!raw || typeof raw !== "object") return null;
+  const parsed = raw as Record<string, unknown>;
+  const enabled = parsed["enabled"] === true;
+
+  const providersRaw = parsed["providers"];
+  if (providersRaw && typeof providersRaw === "object" && !Array.isArray(providersRaw)) {
+    const providers: Record<string, AiProviderSlot> = {};
+    for (const [id, value] of Object.entries(providersRaw as Record<string, unknown>)) {
+      if (!SLOT_IDS.includes(id)) continue;
+      const slot = cleanSlot(value);
+      if (slot) providers[id] = slot;
+    }
+    const activeRaw = parsed["activePreset"];
+    return {
+      enabled,
+      activePreset:
+        typeof activeRaw === "string" && SLOT_IDS.includes(activeRaw) ? activeRaw : "gemini",
+      providers,
+    };
+  }
+
+  if (typeof parsed["apiKey"] !== "string") return null;
+  const provider: AiProvider =
+    parsed["provider"] === "openai-compatible" ? "openai-compatible" : "gemini";
+  const baseUrl = typeof parsed["baseUrl"] === "string" ? parsed["baseUrl"] : undefined;
+  const presetId = resolveAiPreset(provider, baseUrl);
+  const slot: AiProviderSlot = { apiKey: parsed["apiKey"] };
+  if (typeof parsed["model"] === "string" && parsed["model"]) slot.model = parsed["model"];
+  if (presetId === "custom" && baseUrl) slot.baseUrl = normalizeBaseUrl(baseUrl);
+  return { enabled, activePreset: presetId, providers: { [presetId]: slot } };
+}
+
+/**
+ * The stored record projected into the flat shape AI calls consume:
+ * the ACTIVE slot's key, its provider family, and its endpoint +
+ * model (a named preset's constant endpoint and default model fill
+ * in when the slot never stored its own). Gemini records carry no
+ * provider field — undefined has always meant Gemini here.
+ */
+export function projectAiSettings(record: AiRecord | null): AiSettings | null {
+  if (!record) return null;
+  const slot = record.providers[record.activePreset];
+  if (record.activePreset === "gemini") {
+    return {
+      enabled: record.enabled,
+      apiKey: slot?.apiKey ?? "",
+      ...(slot?.model ? { model: slot.model } : {}),
+    };
+  }
+  const preset = OPENAI_PRESETS.find((item) => item.id === record.activePreset);
+  const baseUrl =
+    record.activePreset === "custom" ? normalizeBaseUrl(slot?.baseUrl) : (preset?.baseUrl ?? "");
+  const model = slot?.model?.trim() || preset?.defaultModel || "";
+  return {
+    enabled: record.enabled,
+    apiKey: slot?.apiKey ?? "",
+    provider: "openai-compatible",
+    ...(baseUrl ? { baseUrl } : {}),
+    ...(model ? { model } : {}),
+  };
 }
 
 function localStore(): Storage | null {
@@ -217,41 +366,57 @@ function recordKey(ownerId: string | null): string {
   return ownerId ? `noma-ai-v1-${ownerId}` : "noma-ai-v1";
 }
 
-export function getAiSettings(ownerId: string | null): AiSettings | null {
+export function getAiRecord(ownerId: string | null): AiRecord | null {
   const store = localStore();
   if (!store) return null;
   try {
     const raw = store.getItem(recordKey(ownerId));
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<AiSettings>;
-    if (typeof parsed.apiKey !== "string") return null;
-    return {
-      enabled: parsed.enabled === true,
-      apiKey: parsed.apiKey,
-      ...(typeof parsed.model === "string" ? { model: parsed.model } : {}),
-      ...(parsed.provider === "gemini" || parsed.provider === "openai-compatible"
-        ? { provider: parsed.provider }
-        : {}),
-      ...(typeof parsed.baseUrl === "string" ? { baseUrl: parsed.baseUrl } : {}),
-    };
+    return normalizeAiRecord(JSON.parse(raw));
   } catch {
     return null;
   }
 }
 
-export function saveAiSettings(ownerId: string | null, settings: AiSettings | null): void {
+export function saveAiRecord(ownerId: string | null, record: AiRecord | null): void {
   const store = localStore();
   if (!store) return;
   try {
-    if (settings) store.setItem(recordKey(ownerId), JSON.stringify(settings));
+    if (record) store.setItem(recordKey(ownerId), JSON.stringify(record));
     else store.removeItem(recordKey(ownerId));
   } catch {
     /* storage unavailable — AI settings simply don't persist */
   }
 }
 
+/** The effective settings for the active provider (what note actions consume). */
+export function getAiSettings(ownerId: string | null): AiSettings | null {
+  return projectAiSettings(getAiRecord(ownerId));
+}
+
+/**
+ * Flat-shape write, kept for single-provider callers and tests: the
+ * settings land in their provider's slot (which becomes active) and
+ * every other provider's slot is preserved untouched.
+ */
+export function saveAiSettings(ownerId: string | null, settings: AiSettings | null): void {
+  if (!settings) {
+    saveAiRecord(ownerId, null);
+    return;
+  }
+  const presetId = resolveAiPreset(settings.provider, settings.baseUrl);
+  const slot: AiProviderSlot = { apiKey: settings.apiKey };
+  if (settings.model?.trim()) slot.model = settings.model;
+  if (presetId === "custom") slot.baseUrl = normalizeBaseUrl(settings.baseUrl);
+  saveAiRecord(ownerId, {
+    enabled: settings.enabled,
+    activePreset: presetId,
+    providers: { ...(getAiRecord(ownerId)?.providers ?? {}), [presetId]: slot },
+  });
+}
+
 export function clearAiSettings(ownerId: string | null): void {
-  saveAiSettings(ownerId, null);
+  saveAiRecord(ownerId, null);
 }
 
 /* ---------------- Gating ---------------- */

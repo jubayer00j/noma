@@ -9,14 +9,19 @@ import {
   OPENROUTER_BASE_URL,
   aiActionsAvailable,
   aiProviderSettingsChanged,
+  aiSlotChanged,
   clearAiSettings,
+  getAiRecord,
   getAiSettings,
+  normalizeAiRecord,
   normalizeBaseUrl,
   noteEligibleForAi,
   parseSummaryBlocks,
   parseTagSuggestions,
   prepareNoteText,
+  projectAiSettings,
   resolveAiPreset,
+  saveAiRecord,
   saveAiSettings,
   suggestTags,
   summarizeNote,
@@ -875,3 +880,275 @@ describe("AI key containment (OpenAI-compatible record)", () => {
   });
 });
 
+/* ---------------- Per-provider key slots: migration ---------------- */
+
+describe("AI record migration (single-key → per-provider slots)", () => {
+  function seedRaw(value: unknown) {
+    window.localStorage.setItem(`noma-ai-v1-${OWNER}`, JSON.stringify(value));
+  }
+
+  it("migrates a legacy Gemini record into the gemini slot, active", () => {
+    seedRaw({ enabled: true, apiKey: API_KEY });
+    expect(getAiRecord(OWNER)).toEqual({
+      enabled: true,
+      activePreset: "gemini",
+      providers: { gemini: { apiKey: API_KEY } },
+    });
+    // The projection is byte-for-byte the old reader's answer.
+    expect(getAiSettings(OWNER)).toEqual({ enabled: true, apiKey: API_KEY });
+  });
+
+  it("migrates a legacy Gemini model override into the gemini slot", () => {
+    seedRaw({ enabled: true, apiKey: API_KEY, provider: "gemini", model: "gemini-custom" });
+    expect(getAiRecord(OWNER)?.providers["gemini"]).toEqual({
+      apiKey: API_KEY,
+      model: "gemini-custom",
+    });
+    expect(getAiSettings(OWNER)).toEqual({
+      enabled: true,
+      apiKey: API_KEY,
+      model: "gemini-custom",
+    });
+  });
+
+  it("migrates a legacy OpenAI-compatible record into its preset slot", () => {
+    seedRaw({
+      enabled: true,
+      apiKey: "sk-groq-legacy",
+      provider: "openai-compatible",
+      baseUrl: "https://api.groq.com/openai/v1/",
+      model: "llama-3.3-70b-versatile",
+    });
+    expect(getAiRecord(OWNER)).toEqual({
+      enabled: true,
+      activePreset: "groq",
+      providers: { groq: { apiKey: "sk-groq-legacy", model: "llama-3.3-70b-versatile" } },
+    });
+    // Projection restores the preset's constant endpoint (stored URL
+    // had a trailing slash) and the slot's model.
+    expect(getAiSettings(OWNER)).toEqual({
+      enabled: true,
+      apiKey: "sk-groq-legacy",
+      provider: "openai-compatible",
+      baseUrl: "https://api.groq.com/openai/v1",
+      model: "llama-3.3-70b-versatile",
+    });
+  });
+
+  it("migrates an unmatched legacy endpoint into the custom slot, URL kept", () => {
+    seedRaw({
+      enabled: false,
+      apiKey: "sk-custom-legacy",
+      provider: "openai-compatible",
+      baseUrl: "https://llm.example.com/v1/",
+      model: "house-model",
+    });
+    expect(getAiRecord(OWNER)).toEqual({
+      enabled: false,
+      activePreset: "custom",
+      providers: {
+        custom: {
+          apiKey: "sk-custom-legacy",
+          model: "house-model",
+          baseUrl: "https://llm.example.com/v1",
+        },
+      },
+    });
+    expect(getAiSettings(OWNER)?.baseUrl).toBe("https://llm.example.com/v1");
+  });
+
+  it("treats an unknown legacy provider as Gemini, and a keyless record as no record", () => {
+    seedRaw({ enabled: true, apiKey: API_KEY, provider: "bogus" });
+    expect(getAiRecord(OWNER)?.activePreset).toBe("gemini");
+
+    seedRaw({ enabled: true });
+    expect(getAiRecord(OWNER)).toBeNull();
+    expect(getAiSettings(OWNER)).toBeNull();
+  });
+
+  it("is idempotent: normalizing a migrated record changes nothing", () => {
+    const legacy = {
+      enabled: true,
+      apiKey: "sk-or-legacy",
+      provider: "openai-compatible",
+      baseUrl: OPENROUTER_BASE_URL,
+      model: "openai/gpt-4o-mini",
+    };
+    const once = normalizeAiRecord(legacy);
+    expect(once).not.toBeNull();
+    expect(normalizeAiRecord(once)).toEqual(once);
+    // And a stored round-trip through the record API is stable.
+    seedRaw(legacy);
+    const migrated = getAiRecord(OWNER);
+    saveAiRecord(OWNER, migrated);
+    expect(getAiRecord(OWNER)).toEqual(migrated);
+  });
+});
+
+/* ---------------- Per-provider key slots: save / switch / remove ---------------- */
+
+describe("AI per-provider slots", () => {
+  const GEMINI_KEY = "AIza-gemini-key-0001";
+  const OR_KEY = "sk-or-openrouter-key-0002";
+
+  function twoProviderRecord() {
+    saveAiRecord(OWNER, {
+      enabled: true,
+      activePreset: "gemini",
+      providers: { gemini: { apiKey: GEMINI_KEY } },
+    });
+    // Saving a second provider's slot (the Settings flow) must not
+    // disturb the first.
+    const current = getAiRecord(OWNER)!;
+    saveAiRecord(OWNER, {
+      ...current,
+      activePreset: "openrouter",
+      providers: {
+        ...current.providers,
+        openrouter: { apiKey: OR_KEY, model: "openai/gpt-4o-mini" },
+      },
+    });
+  }
+
+  it("keeps each provider's key separate and projects the active slot", () => {
+    twoProviderRecord();
+    expect(getAiSettings(OWNER)).toEqual({
+      enabled: true,
+      apiKey: OR_KEY,
+      provider: "openai-compatible",
+      baseUrl: OPENROUTER_BASE_URL,
+      model: "openai/gpt-4o-mini",
+    });
+
+    // Switch back: the Gemini key is intact, no re-entry.
+    const current = getAiRecord(OWNER)!;
+    saveAiRecord(OWNER, { ...current, activePreset: "gemini" });
+    expect(getAiSettings(OWNER)).toEqual({ enabled: true, apiKey: GEMINI_KEY });
+    expect(getAiRecord(OWNER)?.providers["openrouter"]?.apiKey).toBe(OR_KEY);
+  });
+
+  it("removing one provider's slot never affects the others", () => {
+    twoProviderRecord();
+    const current = getAiRecord(OWNER)!;
+    const providers = { ...current.providers };
+    delete providers["openrouter"];
+    saveAiRecord(OWNER, { ...current, providers });
+    expect(getAiRecord(OWNER)?.providers["gemini"]?.apiKey).toBe(GEMINI_KEY);
+    expect(getAiRecord(OWNER)?.providers["openrouter"]).toBeUndefined();
+  });
+
+  it("replacing a slot's key leaves the other slots and the flag alone", () => {
+    twoProviderRecord();
+    const current = getAiRecord(OWNER)!;
+    saveAiRecord(OWNER, {
+      ...current,
+      providers: {
+        ...current.providers,
+        gemini: { apiKey: "AIza-gemini-key-replaced" },
+      },
+    });
+    const after = getAiRecord(OWNER)!;
+    expect(after.providers["gemini"]?.apiKey).toBe("AIza-gemini-key-replaced");
+    expect(after.providers["openrouter"]?.apiKey).toBe(OR_KEY);
+    expect(after.enabled).toBe(true);
+  });
+
+  it("projects a named preset's default model when its slot stored none", () => {
+    expect(
+      projectAiSettings({
+        enabled: true,
+        activePreset: "groq",
+        providers: { groq: { apiKey: "sk-groq" } },
+      }),
+    ).toEqual({
+      enabled: true,
+      apiKey: "sk-groq",
+      provider: "openai-compatible",
+      baseUrl: "https://api.groq.com/openai/v1",
+      model: "llama-3.3-70b-versatile",
+    });
+  });
+
+  it("a flat saveAiSettings write lands in its own slot and preserves the rest", () => {
+    saveAiSettings(OWNER, { enabled: true, apiKey: GEMINI_KEY });
+    saveAiSettings(OWNER, {
+      enabled: true,
+      apiKey: OR_KEY,
+      provider: "openai-compatible",
+      baseUrl: OPENROUTER_BASE_URL,
+      model: "openai/gpt-4o-mini",
+    });
+    const record = getAiRecord(OWNER)!;
+    expect(record.providers["gemini"]?.apiKey).toBe(GEMINI_KEY);
+    expect(record.providers["openrouter"]?.apiKey).toBe(OR_KEY);
+    expect(record.activePreset).toBe("openrouter");
+  });
+});
+
+/* ---------------- aiSlotChanged ---------------- */
+
+describe("aiSlotChanged", () => {
+  it("an unchanged slot is not dirty; a missing slot equals an empty one", () => {
+    const slot = { apiKey: "sk-1", model: "m1" };
+    expect(aiSlotChanged(slot, { ...slot })).toBe(false);
+    expect(aiSlotChanged(undefined, undefined)).toBe(false);
+    expect(aiSlotChanged(undefined, { apiKey: "" })).toBe(false);
+  });
+
+  it("a key, model, or endpoint change is dirty; padding and slashes are not", () => {
+    const slot = { apiKey: "sk-1", model: "m1", baseUrl: "https://llm.example.com/v1" };
+    expect(aiSlotChanged(slot, { ...slot, apiKey: "sk-2" })).toBe(true);
+    expect(aiSlotChanged(slot, { ...slot, apiKey: " sk-1 " })).toBe(false);
+    expect(aiSlotChanged(slot, { ...slot, model: "m2" })).toBe(true);
+    expect(aiSlotChanged(slot, { ...slot, baseUrl: "https://other.example.com/v1" })).toBe(true);
+    expect(aiSlotChanged(slot, { ...slot, baseUrl: "https://llm.example.com/v1/" })).toBe(false);
+  });
+
+  it("an unset model compares as the preset default", () => {
+    expect(
+      aiSlotChanged({ apiKey: "sk-1" }, { apiKey: "sk-1", model: "gpt-4o-mini" }, "gpt-4o-mini"),
+    ).toBe(false);
+    expect(
+      aiSlotChanged({ apiKey: "sk-1", model: "other" }, { apiKey: "sk-1" }, "gpt-4o-mini"),
+    ).toBe(true);
+  });
+});
+
+/* ---------------- The keys never reach a backup, however many providers ---------------- */
+
+describe("AI key containment (multiple provider slots)", () => {
+  it("a backup built with several providers' keys stored contains none of them", async () => {
+    const keys = [
+      "AIza-gemini-secret-AAAA",
+      "sk-or-openrouter-secret-BBBB",
+      "sk-custom-secret-CCCC",
+    ];
+    saveAiRecord(OWNER, {
+      enabled: true,
+      activePreset: "openrouter",
+      providers: {
+        gemini: { apiKey: keys[0]! },
+        openrouter: { apiKey: keys[1]!, model: "openai/gpt-4o-mini" },
+        custom: { apiKey: keys[2]!, baseUrl: "https://llm.example.com/v1", model: "house-model" },
+      },
+    });
+    const db = new FakeDb();
+    await db.notes.put(baseNote());
+
+    const { blob } = await buildBackupZip(asDb(db), OWNER);
+
+    const rawText = new TextDecoder("latin1").decode(await blob.arrayBuffer());
+    for (const key of keys) expect(rawText).not.toContain(key);
+
+    const zip = await JSZip.loadAsync(await blob.arrayBuffer());
+    for (const name of Object.keys(zip.files)) {
+      const entry = zip.files[name];
+      if (!entry || entry.dir) continue;
+      const text = await entry.async("string");
+      for (const key of keys) expect(text, `entry ${name}`).not.toContain(key);
+    }
+
+    const payload = await readBackupZip(blob, OWNER);
+    for (const key of keys) expect(JSON.stringify(payload)).not.toContain(key);
+  });
+});
