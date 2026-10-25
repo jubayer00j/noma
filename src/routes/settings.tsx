@@ -1,6 +1,22 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useLiveQuery } from "dexie-react-hooks";
-import { ArrowLeft, ChevronRight, Download, Loader2, LogOut, Upload } from "lucide-react";
+import {
+  ArrowLeft,
+  ChevronRight,
+  CloudUpload,
+  Database,
+  Download,
+  Info,
+  Loader2,
+  LogOut,
+  Palette,
+  ShieldCheck,
+  Sparkles,
+  Type,
+  Upload,
+  User,
+  type LucideIcon,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AppGate } from "@/components/noma/app-gate";
@@ -107,6 +123,26 @@ const SCREEN_TITLES: Record<SettingsScreen, string> = {
   about: "About",
 };
 
+/** One icon per category, shown in the root rows and sub-screen headers. */
+const SCREEN_ICONS: Record<SettingsScreen, LucideIcon> = {
+  sync: CloudUpload,
+  security: ShieldCheck,
+  appearance: Palette,
+  writing: Type,
+  ai: Sparkles,
+  data: Database,
+  account: User,
+  about: Info,
+};
+
+/** The root list's card grouping (redesign): category pairs, in order. */
+const ROW_GROUPS: ReadonlyArray<ReadonlyArray<SettingsScreen>> = [
+  ["sync", "security"],
+  ["appearance", "writing"],
+  ["ai", "data"],
+  ["account", "about"],
+];
+
 export function SettingsPage() {
   const { settings, update } = useSettings();
   const auth = useAuth();
@@ -175,10 +211,11 @@ export function SettingsPage() {
 
   const ownerId = auth.user?.uid ?? null;
 
-  const rows: Array<{ id: SettingsScreen; title: string; summary: string }> = [
+  const rows: Array<{ id: SettingsScreen; title: string; summary: string; icon: LucideIcon }> = [
     {
       id: "sync",
       title: SCREEN_TITLES.sync,
+      icon: SCREEN_ICONS.sync,
       summary: syncSummary({
         connected: getConnection(ownerId) !== null,
         backupMode: settings.backupMode,
@@ -188,6 +225,7 @@ export function SettingsPage() {
     {
       id: "security",
       title: SCREEN_TITLES.security,
+      icon: SCREEN_ICONS.security,
       summary: securitySummary({
         appLockEnabled: settings.appLockEnabled,
         encryptionEnabled: getBackupEncryptionRecord(ownerId) !== null,
@@ -196,26 +234,43 @@ export function SettingsPage() {
     {
       id: "appearance",
       title: SCREEN_TITLES.appearance,
+      icon: SCREEN_ICONS.appearance,
       summary: appearanceSummary(settings.theme, THEME_OPTIONS),
     },
     {
       id: "writing",
       title: SCREEN_TITLES.writing,
+      icon: SCREEN_ICONS.writing,
       summary: writingSummary({ fontSize: settings.fontSize, lineHeight: settings.lineHeight }),
     },
     {
       id: "ai",
       title: SCREEN_TITLES.ai,
+      icon: SCREEN_ICONS.ai,
       summary: aiSummary({ hasKey: (getAiSettings(ownerId)?.apiKey.trim() ?? "") !== "" }),
     },
-    { id: "data", title: SCREEN_TITLES.data, summary: dataSummary(noteCount) },
+    {
+      id: "data",
+      title: SCREEN_TITLES.data,
+      icon: SCREEN_ICONS.data,
+      summary: dataSummary(noteCount),
+    },
     {
       id: "account",
       title: SCREEN_TITLES.account,
+      icon: SCREEN_ICONS.account,
       summary: accountSummary({ email: auth.email, signedIn: auth.user !== null }),
     },
-    { id: "about", title: SCREEN_TITLES.about, summary: aboutSummary(appVersion) },
+    {
+      id: "about",
+      title: SCREEN_TITLES.about,
+      icon: SCREEN_ICONS.about,
+      summary: aboutSummary(appVersion),
+    },
   ];
+
+  const rowsById = new Map(rows.map((row) => [row.id, row]));
+  const ScreenIcon = screen ? SCREEN_ICONS[screen] : null;
 
   async function handleExport() {
     setBusy("export");
@@ -311,37 +366,60 @@ export function SettingsPage() {
             >
               <ArrowLeft className="size-4" /> Settings
             </Button>
+            {ScreenIcon && (
+              <span className="ml-1 flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <ScreenIcon className="size-[18px]" aria-hidden="true" />
+              </span>
+            )}
             <h1 className="font-serif text-lg font-medium">{SCREEN_TITLES[screen]}</h1>
           </>
         )}
       </header>
 
       <div className="mx-auto max-w-2xl px-5 pb-20 sm:px-6">
-        {/* Root: the category list. Rows show current state as a
-            summary; the whole row is the tap target. */}
+        {/* Root: the category list, grouped into cards (redesign).
+            Rows show current state as a summary beside the category's
+            icon tile; the whole row is the tap target. */}
         <div data-screen="root" hidden={screen !== null} aria-hidden={screen !== null}>
-          <ul>
-            {rows.map((row) => (
-              <li key={row.id} className="border-b border-border last:border-0">
-                <button
-                  type="button"
-                  onClick={() => setScreen(row.id)}
-                  className="flex w-full items-center gap-3 py-4 text-left"
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-base font-medium">{row.title}</span>
-                    <span className="block truncate text-sm text-muted-foreground">
-                      {row.summary}
-                    </span>
-                  </span>
-                  <ChevronRight
-                    className="size-5 shrink-0 text-muted-foreground"
-                    aria-hidden="true"
-                  />
-                </button>
-              </li>
+          <div className="space-y-4 pt-6">
+            {ROW_GROUPS.map((group) => (
+              <section
+                key={group.join("-")}
+                className="overflow-hidden rounded-2xl border border-border bg-card"
+              >
+                <ul className="divide-y divide-border px-5">
+                  {group.map((id) => {
+                    const row = rowsById.get(id);
+                    if (!row) return null;
+                    const RowIcon = row.icon;
+                    return (
+                      <li key={row.id}>
+                        <button
+                          type="button"
+                          onClick={() => setScreen(row.id)}
+                          className="-mx-5 flex w-[calc(100%+2.5rem)] items-center gap-4 px-5 py-[18px] text-left transition-colors hover:bg-accent/40 active:bg-accent/60"
+                        >
+                          <span className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                            <RowIcon className="size-6" aria-hidden="true" />
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-[17px] font-semibold">{row.title}</span>
+                            <span className="block truncate text-sm text-muted-foreground">
+                              {row.summary}
+                            </span>
+                          </span>
+                          <ChevronRight
+                            className="size-5 shrink-0 text-muted-foreground"
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
             ))}
-          </ul>
+          </div>
         </div>
 
         {/* Sync & backup: Drive connection + mode (DriveCard), manual
@@ -572,7 +650,7 @@ export function SettingsPage() {
             </p>
 
             {!auth.configured ? (
-              <div className="rounded-lg border border-border bg-card p-4 text-sm">
+              <div className="rounded-2xl border border-border bg-card p-4 text-sm">
                 <p className="font-medium">Authentication isn't configured</p>
                 <p className="mt-1 text-muted-foreground">
                   Paste your six Firebase Web App values into{" "}

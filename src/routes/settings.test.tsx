@@ -208,6 +208,36 @@ describe("Settings root list", () => {
     renderPage();
     expect(rowButton("Security").textContent).toContain("App lock on · Encryption off");
   });
+
+  it("groups the eight rows into four cards, each row with its icon tile", () => {
+    renderPage();
+    const root = screenEl("root");
+    const cards = [...root.querySelectorAll("section")];
+    expect(cards).toHaveLength(4);
+
+    const pairs = cards.map((card) =>
+      [...card.querySelectorAll("button")].map((b) => b.textContent ?? ""),
+    );
+    expect(pairs).toHaveLength(4);
+    const pairTitles: Array<[string, string]> = [
+      ["Sync & backup", "Security"],
+      ["Appearance", "Writing"],
+      ["AI features", "Data"],
+      ["Account", "About"],
+    ];
+    pairs.forEach((pair, i) => {
+      expect(pair).toHaveLength(2);
+      expect(pair[0]).toContain(pairTitles[i]![0]);
+      expect(pair[1]).toContain(pairTitles[i]![1]);
+    });
+
+    // Every row carries its category icon (an svg inside the button's tile).
+    const rowButtons = [...root.querySelectorAll("button")];
+    expect(rowButtons).toHaveLength(8);
+    for (const button of rowButtons) {
+      expect(button.querySelector("svg")).not.toBeNull();
+    }
+  });
 });
 
 describe("Settings sub-screens", () => {
@@ -218,11 +248,15 @@ describe("Settings sub-screens", () => {
     expect(isShown("appearance")).toBe(true);
     expect(screenEl("appearance").querySelector('[data-testid="theme-picker"]')).not.toBeNull();
     expect(container.querySelector("h1")?.textContent).toBe("Appearance");
+    // The sub-screen header carries the category's icon tile beside the
+    // title: back arrow + tile icon = two svgs (the root header has one).
+    expect(container.querySelector("header")?.querySelectorAll("svg")).toHaveLength(2);
 
     click(rowButton("Settings"));
     expect(isShown("root")).toBe(true);
     expect(isShown("appearance")).toBe(false);
     expect(container.querySelector("h1")?.textContent).toBe("Settings");
+    expect(container.querySelector("header")?.querySelectorAll("svg")).toHaveLength(1);
   });
 
   it("each sub-screen mounts its block", () => {
