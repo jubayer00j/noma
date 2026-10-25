@@ -500,6 +500,108 @@ describe("parseMarkdownFiles", () => {
   });
 });
 
+describe("parseMarkdownFiles — ordered list markers", () => {
+  it("keeps a numeric list's start from its first marker", async () => {
+    const shifted = await parseMarkdownFiles([mdFile({ text: "3. Third\n4. Fourth" })]);
+    expect(shifted.notes[0]!.contentHtml).toBe(
+      '<ol start="3"><li><p>Third</p></li><li><p>Fourth</p></li></ol>',
+    );
+    // The sanitizer keeps the validated start, so it survives into the editor.
+    expect(sanitizeHtml(shifted.notes[0]!.contentHtml)).toContain('<ol start="3">');
+
+    const fromOne = await parseMarkdownFiles([mdFile({ text: "1. First\n2. Second" })]);
+    expect(fromOne.notes[0]!.contentHtml).toBe(
+      "<ol><li><p>First</p></li><li><p>Second</p></li></ol>",
+    );
+
+    // The ) delimiter carries the same semantics.
+    const parens = await parseMarkdownFiles([mdFile({ text: "3) Third\n4) Fourth" })]);
+    expect(parens.notes[0]!.contentHtml).toBe(
+      '<ol start="3"><li><p>Third</p></li><li><p>Fourth</p></li></ol>',
+    );
+  });
+
+  it("imports lettered lists with their type, and start when not a/A", async () => {
+    const lower = await parseMarkdownFiles([mdFile({ text: "a. Alpha\nb. Beta" })]);
+    expect(lower.notes[0]!.contentHtml).toBe(
+      '<ol type="a"><li><p>Alpha</p></li><li><p>Beta</p></li></ol>',
+    );
+
+    const shifted = await parseMarkdownFiles([mdFile({ text: "c. Gamma\nd. Delta" })]);
+    expect(shifted.notes[0]!.contentHtml).toBe(
+      '<ol type="a" start="3"><li><p>Gamma</p></li><li><p>Delta</p></li></ol>',
+    );
+
+    const upper = await parseMarkdownFiles([mdFile({ text: "A. Alpha\nB. Beta" })]);
+    expect(upper.notes[0]!.contentHtml).toBe(
+      '<ol type="A"><li><p>Alpha</p></li><li><p>Beta</p></li></ol>',
+    );
+
+    const nested = await parseMarkdownFiles([
+      mdFile({ text: "a. One\n  a. Sub\n  b. Sub two\nb. Two" }),
+    ]);
+    expect(nested.notes[0]!.contentHtml).toBe(
+      '<ol type="a"><li><p>One</p><ol type="a"><li><p>Sub</p></li><li><p>Sub two</p></li></ol></li><li><p>Two</p></li></ol>',
+    );
+  });
+
+  it("reads i/ii/iii as roman, not alpha, and keeps a roman start", async () => {
+    const roman = await parseMarkdownFiles([mdFile({ text: "i. One\nii. Two\niii. Three" })]);
+    expect(roman.notes[0]!.contentHtml).toBe(
+      '<ol type="i"><li><p>One</p></li><li><p>Two</p></li><li><p>Three</p></li></ol>',
+    );
+
+    const shifted = await parseMarkdownFiles([mdFile({ text: "ii. Two\niii. Three" })]);
+    expect(shifted.notes[0]!.contentHtml).toBe(
+      '<ol type="i" start="2"><li><p>Two</p></li><li><p>Three</p></li></ol>',
+    );
+
+    const upper = await parseMarkdownFiles([mdFile({ text: "I. One\nII. Two" })]);
+    expect(upper.notes[0]!.contentHtml).toBe(
+      '<ol type="I"><li><p>One</p></li><li><p>Two</p></li></ol>',
+    );
+  });
+
+  it("keeps unconfirmed lettered lines as prose", async () => {
+    const lone = await parseMarkdownFiles([mdFile({ text: "a. Some sentence." })]);
+    expect(lone.notes[0]!.contentHtml).toBe("<p>a. Some sentence.</p>");
+
+    const abbrev = await parseMarkdownFiles([mdFile({ text: "i. e. an abbreviation in use." })]);
+    expect(abbrev.notes[0]!.contentHtml).toBe("<p>i. e. an abbreviation in use.</p>");
+
+    // A candidate whose next line does not continue the sequence is prose,
+    // and so is the non-sequential candidate after it.
+    const broken = await parseMarkdownFiles([
+      mdFile({ text: "a. First claim\nc. Not a sequence" }),
+    ]);
+    expect(broken.notes[0]!.contentHtml).toBe("<p>a. First claim c. Not a sequence</p>");
+
+    const followedByProse = await parseMarkdownFiles([
+      mdFile({ text: "b. A bold claim\nfollowed by ordinary prose" }),
+    ]);
+    expect(followedByProse.notes[0]!.contentHtml).toBe(
+      "<p>b. A bold claim followed by ordinary prose</p>",
+    );
+  });
+
+  it("ends a lettered run at a marker that breaks the sequence", async () => {
+    const result = await parseMarkdownFiles([mdFile({ text: "a. x\nb. y\nd. z" })]);
+    expect(result.notes[0]!.contentHtml).toBe(
+      '<ol type="a"><li><p>x</p></li><li><p>y</p></li></ol><p>d. z</p>',
+    );
+  });
+
+  it("renders a numeric list and a lettered list as two separate lists", async () => {
+    const result = await parseMarkdownFiles([
+      mdFile({ text: "1. First\n2. Second\na. Alpha\nb. Beta" }),
+    ]);
+    expect(result.notes[0]!.contentHtml).toBe(
+      "<ol><li><p>First</p></li><li><p>Second</p></li></ol>" +
+        '<ol type="a"><li><p>Alpha</p></li><li><p>Beta</p></li></ol>',
+    );
+  });
+});
+
 /* ---------------- Markdown in a ZIP ---------------- */
 
 describe("parseImportZip", () => {
