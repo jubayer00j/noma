@@ -1,4 +1,4 @@
-import { sanitizeHtml } from "./sanitize";
+import { htmlToPlainText, sanitizeHtml } from "./sanitize";
 import type { Note } from "./types";
 
 /**
@@ -392,7 +392,15 @@ function textImage(el: Element): string {
   return alt ? `[Image: ${alt}]` : "[Image]";
 }
 
-function textInline(node: Node): string {
+interface TextRenderOptions {
+  /**
+   * Append " (href)" after a link's text. File exports do (the URL is part
+   * of the exported document); card previews don't (link text alone).
+   */
+  linkUrls: boolean;
+}
+
+function textInline(node: Node, opts: TextRenderOptions): string {
   let out = "";
   for (const child of Array.from(node.childNodes)) {
     if (child.nodeType === 3) {
@@ -406,22 +414,22 @@ function textInline(node: Node): string {
         out += "\n";
         break;
       case "A": {
-        const inner = textInline(el);
+        const inner = textInline(el, opts);
         const href = el.getAttribute("href");
-        out += href && href !== inner.trim() ? `${inner} (${href})` : inner;
+        out += opts.linkUrls && href && href !== inner.trim() ? `${inner} (${href})` : inner;
         break;
       }
       case "IMG":
         out += textImage(el);
         break;
       default:
-        out += textInline(el);
+        out += textInline(el, opts);
     }
   }
   return out;
 }
 
-function textList(el: Element, depth: number): string {
+function textList(el: Element, depth: number, opts: TextRenderOptions): string {
   const isTaskList = el.tagName === "UL" && el.getAttribute("data-type") === "taskList";
   const ordered = el.tagName === "OL";
   const start = Number.parseInt(el.getAttribute("start") ?? "1", 10) || 1;
@@ -450,7 +458,7 @@ function textList(el: Element, depth: number): string {
         if (child.nodeType !== 1) continue;
         const childEl = child as Element;
         if (childEl.tagName === "UL" || childEl.tagName === "OL") {
-          nested.push(textList(childEl, depth + 1));
+          nested.push(textList(childEl, depth + 1, opts));
           continue;
         }
         if (childEl.tagName === "LABEL" || childEl.tagName === "INPUT") continue;
@@ -458,7 +466,7 @@ function textList(el: Element, depth: number): string {
           collect(childEl);
           continue;
         }
-        const part = textInline(childEl).replace(/\s+/g, " ").trim();
+        const part = textInline(childEl, opts).replace(/\s+/g, " ").trim();
         if (part) textParts.push(part);
       }
     };
@@ -470,7 +478,7 @@ function textList(el: Element, depth: number): string {
   return lines.join("\n");
 }
 
-function textBlocks(node: Node): string[] {
+function textBlocks(node: Node, opts: TextRenderOptions): string[] {
   const blocks: string[] = [];
   for (const child of Array.from(node.childNodes)) {
     if (child.nodeType === 3) {
@@ -486,7 +494,7 @@ function textBlocks(node: Node): string[] {
       case "H3":
       case "H4":
       case "P": {
-        const text = textInline(el).trim();
+        const text = textInline(el, opts).trim();
         if (text) blocks.push(text);
         break;
       }
@@ -494,7 +502,7 @@ function textBlocks(node: Node): string[] {
         blocks.push((el.textContent ?? "").replace(/\n+$/, ""));
         break;
       case "BLOCKQUOTE": {
-        const inner = textBlocks(el).join("\n");
+        const inner = textBlocks(el, opts).join("\n");
         blocks.push(
           inner
             .split("\n")
@@ -508,7 +516,7 @@ function textBlocks(node: Node): string[] {
         break;
       case "UL":
       case "OL": {
-        const list = textList(el, 0);
+        const list = textList(el, 0, opts);
         if (list) blocks.push(list);
         break;
       }
@@ -516,7 +524,7 @@ function textBlocks(node: Node): string[] {
         const rows = Array.from(el.querySelectorAll("tr")).map((tr) =>
           Array.from(tr.children)
             .filter((cell) => cell.tagName === "TH" || cell.tagName === "TD")
-            .map((cell) => textInline(cell).replace(/\s+/g, " ").trim())
+            .map((cell) => textInline(cell, opts).replace(/\s+/g, " ").trim())
             .join(" | "),
         );
         if (rows.length) blocks.push(rows.join("\n"));
@@ -527,10 +535,10 @@ function textBlocks(node: Node): string[] {
         break;
       case "DIV":
         if (isChartDiv(el)) blocks.push(chartPlaceholder(el.getAttribute("data-chart-type")));
-        else blocks.push(...textBlocks(el));
+        else blocks.push(...textBlocks(el, opts));
         break;
       default: {
-        const text = textInline(el).trim();
+        const text = textInline(el, opts).trim();
         if (text) blocks.push(text);
       }
     }
@@ -545,8 +553,28 @@ export function noteToPlainText(note: NoteContent, resolveImage?: AttachmentReso
   void resolveImage;
   const blocks = [exportTitle(note)];
   const body = parseBody(note.content);
-  if (body) blocks.push(...textBlocks(body));
+  if (body) blocks.push(...textBlocks(body, { linkUrls: true }));
   return `${blocks.filter((b) => b.trim()).join("\n\n")}\n`;
+}
+
+/**
+ * Structure-aware text for note-list card previews: the plain-text walk
+ * above — list items keep their markers — minus the export's title line
+ * (the card shows the title itself) and link URLs (link text alone),
+ * flattened to the single space-separated flow the cards render, the same
+ * contract htmlToPlainText gives the flat-text consumers. Word counts,
+ * search snippets and AI prompts keep using htmlToPlainText; only the
+ * card preview switches, so it can show a list's ordering at a glance.
+ */
+export function notePreviewText(html: string): string {
+  const body = parseBody(html);
+  if (!body) return htmlToPlainText(html);
+  const blocks = textBlocks(body, { linkUrls: false });
+  return blocks
+    .filter((b) => b.trim())
+    .join("\n")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /* ---------------- Standalone HTML ---------------- */
