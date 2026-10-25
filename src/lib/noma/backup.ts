@@ -16,6 +16,7 @@ import {
   scheduleNotification,
 } from "./notifications";
 import { sanitizeHtml } from "./sanitize";
+import { invalidateMismatchedVectors } from "./semantic";
 import { getDeviceId } from "./sync";
 import {
   BACKUP_FORMAT_VERSION,
@@ -440,11 +441,20 @@ export async function applyTombstones(
         await cancelNotification(reminder.id, reminder.notificationId);
       }
       const attachmentCount = await db.attachments.where("noteId").equals(id).count();
-      await db.transaction("rw", db.notes, db.attachments, db.reminders, async () => {
-        await db.attachments.where("noteId").equals(id).delete();
-        await db.reminders.where("noteId").equals(id).delete();
-        await db.notes.delete(id);
-      });
+      await db.transaction(
+        "rw",
+        db.notes,
+        db.attachments,
+        db.reminders,
+        db.noteEmbeddings,
+        async () => {
+          await db.attachments.where("noteId").equals(id).delete();
+          await db.reminders.where("noteId").equals(id).delete();
+          // The note's semantic vector dies with it (semantic.ts).
+          if (db.noteEmbeddings) await db.noteEmbeddings.delete(id);
+          await db.notes.delete(id);
+        },
+      );
       deleted += 1 + reminders.length + attachmentCount;
     } else if (entity === "folder") {
       const folder = await db.folders.get(id);
@@ -619,6 +629,19 @@ export async function applyBackup(
   if (payload.tombstones?.length) {
     if (mode === "merge") counts.deleted += await applyTombstones(db, payload.tombstones);
     await recordPayloadTombstones(db, payload.tombstones);
+  }
+
+  // These bulk writes bypass updateNote's semantic save hook: drop any
+  // stored vector that no longer tells the truth about its note after
+  // the restore/merge — content replaced, the note now locked,
+  // trashed, or gone entirely. Local-only invalidation (semantic.ts):
+  // nothing is re-embedded here, so an affected note simply reads as
+  // stale until its next save or an Update index tap.
+  if (db.noteEmbeddings) {
+    const vectorRows = await db.noteEmbeddings.toArray();
+    const affected = new Set<string>(payload.notes.map((note) => note.id));
+    for (const row of vectorRows) affected.add(row.noteId);
+    await invalidateMismatchedVectors(db, affected);
   }
 
   // Clean up any remaining orphans or duplicate reminders

@@ -8,7 +8,10 @@ import type { Note } from "./types";
  * provider under that key. Calls happen ONLY inside user-initiated
  * flows — the two note actions (Summarize / Suggest tags) and the
  * Settings "Test connection" button. Nothing ambient, nothing
- * automatic.
+ * automatic. (Semantic search, #8.5, follows the same rule: its
+ * embedding calls happen only inside the user's explicit index
+ * build/update, on their own note saves once they have opted in by
+ * building an index, and on their own searches — see semantic.ts.)
  *
  * Two API shapes cover every major provider: Gemini's native API
  * (direct Google calls) and one OpenAI-compatible chat-completions
@@ -106,6 +109,43 @@ export const OPENAI_PRESETS: AiPreset[] = [
   { id: "custom", label: "Custom endpoint", baseUrl: "", defaultModel: "", keyUrl: null },
 ];
 
+/* ---------------- Embeddings capability (semantic search, #8.5) ---------------- */
+
+/**
+ * Whether a preset can serve embeddings, and the model to offer by
+ * default. Verified against provider docs (2026-10-25): Gemini's
+ * native `gemini-embedding-001`; OpenAI's and OpenRouter's standard
+ * `/embeddings` endpoints. Groq and DeepSeek expose no embeddings
+ * service at all ("none" — semantic search is honestly unavailable
+ * there). Together, Mistral and Custom speak the compatible shape but
+ * pin NO default: the user types the model id, unverified, the same
+ * honesty rule as chat via Custom.
+ */
+export type EmbeddingMode = "native" | "compatible" | "none";
+
+export interface EmbeddingCapability {
+  mode: EmbeddingMode;
+  defaultModel?: string;
+}
+
+export const EMBEDDING_CAPABILITIES: Record<string, EmbeddingCapability> = {
+  gemini: { mode: "native", defaultModel: "gemini-embedding-001" },
+  openai: { mode: "compatible", defaultModel: "text-embedding-3-small" },
+  openrouter: { mode: "compatible", defaultModel: "openai/text-embedding-3-small" },
+  groq: { mode: "none" },
+  together: { mode: "compatible" },
+  deepseek: { mode: "none" },
+  mistral: { mode: "compatible" },
+  custom: { mode: "compatible" },
+};
+
+export function embeddingCapabilityForPreset(presetId: string): EmbeddingCapability {
+  return EMBEDDING_CAPABILITIES[presetId] ?? { mode: "none" };
+}
+
+/** Gemini embedding output size Noma pins (Matryoshka 768 of 3072/1536/768). */
+export const GEMINI_EMBEDDING_DIMS = 768;
+
 /** Normalizes a stored base URL: trimmed, no trailing slashes. */
 export function normalizeBaseUrl(baseUrl: string | undefined): string {
   return (baseUrl ?? "").trim().replace(/\/+$/, "");
@@ -162,6 +202,7 @@ export function aiSlotChanged(
   saved: AiProviderSlot | undefined,
   candidate: AiProviderSlot | undefined,
   defaultModel = "",
+  defaultEmbeddingModel = "",
 ): boolean {
   const savedKey = (saved?.apiKey ?? "").trim();
   const candidateKey = (candidate?.apiKey ?? "").trim();
@@ -169,6 +210,9 @@ export function aiSlotChanged(
   const savedModel = (saved?.model ?? "").trim() || defaultModel;
   const candidateModel = (candidate?.model ?? "").trim() || defaultModel;
   if (savedModel !== candidateModel) return true;
+  const savedEmbedding = (saved?.embeddingModel ?? "").trim() || defaultEmbeddingModel;
+  const candidateEmbedding = (candidate?.embeddingModel ?? "").trim() || defaultEmbeddingModel;
+  if (savedEmbedding !== candidateEmbedding) return true;
   return normalizeBaseUrl(saved?.baseUrl) !== normalizeBaseUrl(candidate?.baseUrl);
 }
 
@@ -241,6 +285,8 @@ export interface AiProviderSlot {
   apiKey: string;
   model?: string;
   baseUrl?: string;
+  /** Embedding model id for semantic search (#8.5); per-slot like the chat model. */
+  embeddingModel?: string;
 }
 
 /**
@@ -267,6 +313,9 @@ function cleanSlot(raw: unknown): AiProviderSlot | null {
     ...(typeof slot.model === "string" && slot.model ? { model: slot.model } : {}),
     ...(typeof slot.baseUrl === "string" && slot.baseUrl
       ? { baseUrl: normalizeBaseUrl(slot.baseUrl) }
+      : {}),
+    ...(typeof slot.embeddingModel === "string" && slot.embeddingModel.trim()
+      ? { embeddingModel: slot.embeddingModel.trim() }
       : {}),
   };
 }
@@ -407,6 +456,10 @@ export function saveAiSettings(ownerId: string | null, settings: AiSettings | nu
   const presetId = resolveAiPreset(settings.provider, settings.baseUrl);
   const slot: AiProviderSlot = { apiKey: settings.apiKey };
   if (settings.model?.trim()) slot.model = settings.model;
+  const embeddingModel = (settings as { embeddingModel?: unknown }).embeddingModel;
+  if (typeof embeddingModel === "string" && embeddingModel.trim()) {
+    slot.embeddingModel = embeddingModel.trim();
+  }
   if (presetId === "custom") slot.baseUrl = normalizeBaseUrl(settings.baseUrl);
   saveAiRecord(ownerId, {
     enabled: settings.enabled,
@@ -417,6 +470,38 @@ export function saveAiSettings(ownerId: string | null, settings: AiSettings | nu
 
 export function clearAiSettings(ownerId: string | null): void {
   saveAiRecord(ownerId, null);
+}
+
+/* ---------------- Semantic search target (#8.5) ---------------- */
+
+/**
+ * Everything the semantic-search layer needs, resolved from the
+ * stored record in one place: the projected settings for the ACTIVE
+ * provider, that preset's id, its effective embedding model (the
+ * slot's saved choice, else the preset's verified default), and how
+ * it serves embeddings. Null when semantic search cannot run: AI off,
+ * no key saved, the preset has no embeddings service, or no embedding
+ * model is set for a preset that pins no default.
+ */
+export interface AiEmbeddingTarget {
+  settings: AiSettings;
+  presetId: string;
+  embeddingModel: string;
+  mode: "native" | "compatible";
+}
+
+export function getAiEmbeddingTarget(ownerId: string | null): AiEmbeddingTarget | null {
+  const record = getAiRecord(ownerId);
+  if (!record?.enabled) return null;
+  const settings = projectAiSettings(record);
+  if (!settings || !settings.apiKey.trim()) return null;
+  const presetId = record.activePreset;
+  const capability = embeddingCapabilityForPreset(presetId);
+  if (capability.mode === "none") return null;
+  const embeddingModel =
+    record.providers[presetId]?.embeddingModel?.trim() || capability.defaultModel || "";
+  if (!embeddingModel) return null;
+  return { settings, presetId, embeddingModel, mode: capability.mode };
 }
 
 /* ---------------- Gating ---------------- */
@@ -816,6 +901,280 @@ async function generateChatCompletion(
     throw new AiError("empty", "The provider didn't return anything for this note. Try again.");
   }
   return { text: text.trim() };
+}
+
+/* ---------------- Embeddings client (semantic search, #8.5) ---------------- */
+
+export type EmbedTask = "document" | "query";
+
+/** AiSettings plus the embedding model to call (see getAiEmbeddingTarget). */
+export interface EmbeddingSettings extends AiSettings {
+  embeddingModel?: string;
+}
+
+const EMBED_BATCH_SIZE = 100;
+
+/**
+ * Model output is untrusted: a returned vector is only accepted when
+ * it is a non-empty array of finite numbers with a non-zero norm.
+ * Accepted vectors are L2-normalised here, once, so stored vectors
+ * and query vectors alike support cosine-as-dot-product.
+ */
+function validateEmbeddingVector(raw: unknown, badResponseMessage: string): Float32Array {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new AiError("bad-response", badResponseMessage);
+  }
+  const out = new Float32Array(raw.length);
+  let norm = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const value = raw[i];
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      throw new AiError("bad-response", badResponseMessage);
+    }
+    out[i] = value;
+    norm += value * value;
+  }
+  norm = Math.sqrt(norm);
+  if (!(norm > 0)) throw new AiError("bad-response", badResponseMessage);
+  for (let i = 0; i < out.length; i++) out[i] = out[i]! / norm;
+  return out;
+}
+
+/**
+ * Gemini embeddings via :batchEmbedContents, chunked at 100 requests.
+ * Each request pins the retrieval task type and the 768-dimension
+ * Matryoshka output; returned vectors are validated and normalised
+ * (required for reduced dimensions). Error mapping mirrors
+ * generateContent's kinds.
+ */
+async function embedViaGemini(
+  apiKey: string,
+  model: string,
+  texts: string[],
+  task: EmbedTask,
+): Promise<Float32Array[]> {
+  const key = apiKey.trim();
+  if (!key) throw new AiError("no-key");
+  const cleanModel = model.replace(/^models\//, "");
+  const taskType = task === "query" ? "RETRIEVAL_QUERY" : "RETRIEVAL_DOCUMENT";
+  const out: Float32Array[] = [];
+  let dims = -1;
+  for (let start = 0; start < texts.length; start += EMBED_BATCH_SIZE) {
+    const chunk = texts.slice(start, start + EMBED_BATCH_SIZE);
+    let response: Response;
+    try {
+      response = await fetch(`${GEMINI_API_BASE}/models/${cleanModel}:batchEmbedContents`, {
+        method: "POST",
+        headers: {
+          "x-goog-api-key": key,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          requests: chunk.map((text) => ({
+            model: `models/${cleanModel}`,
+            content: { parts: [{ text }] },
+            taskType,
+            outputDimensionality: GEMINI_EMBEDDING_DIMS,
+          })),
+        }),
+      });
+    } catch {
+      throw new AiError("offline");
+    }
+    if (response.status === 429) throw new AiError("rate-limited");
+    if (response.status === 400 || response.status === 401 || response.status === 403) {
+      throw new AiError("invalid-key");
+    }
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new AiError(
+          "model-unavailable",
+          `The Gemini embedding model "${cleanModel}" isn't available through the API right now. Try again later, or report the model name if it keeps failing.`,
+        );
+      }
+      if (response.status === 500 || response.status === 502 || response.status === 503) {
+        throw new AiError("transient");
+      }
+      const apiMessage = await readProviderErrorMessage(response, key);
+      if (apiMessage) {
+        throw new AiError("api-error", `Gemini couldn't complete that request: ${apiMessage}`);
+      }
+      throw new AiError("bad-response");
+    }
+    let data: unknown;
+    try {
+      data = await response.json();
+    } catch {
+      throw new AiError("bad-response");
+    }
+    const embeddings = (data as { embeddings?: unknown } | null)?.embeddings;
+    if (!Array.isArray(embeddings) || embeddings.length !== chunk.length) {
+      throw new AiError("bad-response");
+    }
+    for (const item of embeddings) {
+      const vector = validateEmbeddingVector(
+        (item as { values?: unknown } | null)?.values,
+        AI_ERROR_MESSAGES["bad-response"],
+      );
+      if (dims === -1) dims = vector.length;
+      else if (vector.length !== dims) throw new AiError("bad-response");
+      out.push(vector);
+    }
+  }
+  return out;
+}
+
+/**
+ * OpenAI-compatible embeddings: POST <baseUrl>/embeddings with
+ * {model, input: texts} — the standard shape OpenAI, OpenRouter and
+ * friends serve — reply vectors at data[].embedding (ordered by
+ * data[].index when present). Same auth/headers and error kinds as
+ * the chat client. No silent fallbacks: an endpoint that rejects the
+ * array form surfaces its error, per the #8.5 spec.
+ */
+async function embedViaCompatible(
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+  texts: string[],
+  openRouter: boolean,
+): Promise<Float32Array[]> {
+  const key = apiKey.trim();
+  if (!key) throw new AiError("no-key", "Add your API key in Settings to use AI.");
+  const endpoint = normalizeBaseUrl(baseUrl);
+  if (!endpoint || !/^https:\/\//.test(endpoint)) {
+    throw new AiError(
+      "bad-response",
+      "Set a provider endpoint URL starting with https:// in Settings.",
+    );
+  }
+  const resolvedModel = model.trim();
+  if (!resolvedModel) {
+    throw new AiError("bad-response", "Choose an embedding model for this provider in Settings.");
+  }
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${key}`,
+    "Content-Type": "application/json",
+  };
+  if (openRouter) {
+    headers["X-Title"] = "Noma";
+    const referer = typeof window !== "undefined" ? window.location?.origin : undefined;
+    if (referer) headers["HTTP-Referer"] = referer;
+  }
+  let response: Response;
+  try {
+    response = await fetch(`${endpoint}/embeddings`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: resolvedModel, input: texts }),
+    });
+  } catch {
+    throw new AiError("offline");
+  }
+  if (response.status === 429) throw new AiError("rate-limited");
+  if (response.status === 401 || response.status === 403) {
+    throw new AiError("invalid-key");
+  }
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new AiError(
+        "model-unavailable",
+        `The embedding model "${resolvedModel}" isn't available through this provider right now. Try again later, or report the model name if it keeps failing.`,
+      );
+    }
+    if (response.status === 500 || response.status === 502 || response.status === 503) {
+      throw new AiError(
+        "transient",
+        "The provider is busy right now — try again in a little while.",
+      );
+    }
+    const apiMessage = await readProviderErrorMessage(response, key);
+    if (apiMessage) {
+      throw new AiError("api-error", `Couldn't complete that request: ${apiMessage}`);
+    }
+    throw new AiError(
+      "bad-response",
+      "The provider sent back something Noma couldn't read. Try again.",
+    );
+  }
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    throw new AiError(
+      "bad-response",
+      "The provider sent back something Noma couldn't read. Try again.",
+    );
+  }
+  const items = (data as { data?: unknown } | null)?.data;
+  if (!Array.isArray(items) || items.length !== texts.length) {
+    throw new AiError(
+      "bad-response",
+      "The provider sent back something Noma couldn't read. Try again.",
+    );
+  }
+  const ordered = [...items].sort((a, b) => {
+    const ai = (a as { index?: unknown } | null)?.index;
+    const bi = (b as { index?: unknown } | null)?.index;
+    return typeof ai === "number" && typeof bi === "number" ? ai - bi : 0;
+  });
+  const out: Float32Array[] = [];
+  let dims = -1;
+  for (const item of ordered) {
+    const vector = validateEmbeddingVector(
+      (item as { embedding?: unknown } | null)?.embedding,
+      "The provider sent back something Noma couldn't read. Try again.",
+    );
+    if (dims === -1) dims = vector.length;
+    else if (vector.length !== dims) {
+      throw new AiError(
+        "bad-response",
+        "The provider sent back something Noma couldn't read. Try again.",
+      );
+    }
+    out.push(vector);
+  }
+  return out;
+}
+
+/**
+ * Embed a batch of texts with the configured provider. `task` picks
+ * the retrieval flavour ("document" for notes being indexed, "query"
+ * for a search string); only Gemini's API distinguishes them. Every
+ * returned vector is validated and L2-normalised. Throws AiError on
+ * any failure — callers decide whether that is loud (index build) or
+ * swallowed (search falls back to keyword-only).
+ */
+export async function embedTexts(
+  settings: EmbeddingSettings | null,
+  texts: string[],
+  task: EmbedTask,
+): Promise<Float32Array[]> {
+  if (texts.length === 0) return [];
+  const apiKey = settings?.apiKey ?? "";
+  if (settings?.provider === "openai-compatible") {
+    const presetId = resolveAiPreset(settings.provider, settings.baseUrl);
+    const capability = embeddingCapabilityForPreset(presetId);
+    if (capability.mode === "none") {
+      throw new AiError(
+        "bad-response",
+        "This provider has no embeddings service, so semantic search isn't available with it.",
+      );
+    }
+    const endpoint = normalizeBaseUrl(settings.baseUrl);
+    return embedViaCompatible(
+      apiKey,
+      endpoint,
+      settings.embeddingModel?.trim() || capability.defaultModel || "",
+      texts,
+      endpoint === OPENROUTER_BASE_URL,
+    );
+  }
+  const model =
+    settings?.embeddingModel?.trim() ||
+    embeddingCapabilityForPreset("gemini").defaultModel ||
+    "gemini-embedding-001";
+  return embedViaGemini(apiKey, model, texts, task);
 }
 
 /**

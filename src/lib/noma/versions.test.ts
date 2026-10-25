@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { saveAiRecord } from "./ai";
 import { type NomaDatabase } from "./db";
 import {
   createNote,
@@ -10,6 +11,7 @@ import {
 } from "./notes";
 import { lockNote } from "./note-lock";
 import { sanitizeHtml } from "./sanitize";
+import { embeddedTextForNote, fnv1a } from "./semantic";
 import {
   MAX_VERSIONS,
   SETTLE_MS,
@@ -24,6 +26,7 @@ import type {
   AttachmentMeta,
   Folder,
   Note,
+  NoteEmbedding,
   NoteLock,
   NoteVersion,
   Reminder,
@@ -97,6 +100,37 @@ class FakeTable<T extends Row> {
   }
 }
 
+/** Stand-in for the v5 noteEmbeddings table (keyed by noteId, not id). */
+class FakeEmbeddingTable {
+  rows = new Map<string, NoteEmbedding>();
+  async get(noteId: string): Promise<NoteEmbedding | undefined> {
+    const row = this.rows.get(noteId);
+    return row ? structuredClone(row) : undefined;
+  }
+  async put(row: NoteEmbedding): Promise<string> {
+    this.rows.set(row.noteId, structuredClone(row));
+    return row.noteId;
+  }
+  async bulkPut(rows: NoteEmbedding[]): Promise<void> {
+    for (const row of rows) this.rows.set(row.noteId, structuredClone(row));
+  }
+  async delete(noteId: string): Promise<void> {
+    this.rows.delete(noteId);
+  }
+  async bulkDelete(ids: string[]): Promise<void> {
+    for (const id of ids) this.rows.delete(id);
+  }
+  async clear(): Promise<void> {
+    this.rows.clear();
+  }
+  async count(): Promise<number> {
+    return this.rows.size;
+  }
+  async toArray(): Promise<NoteEmbedding[]> {
+    return [...this.rows.values()].map((row) => structuredClone(row));
+  }
+}
+
 class FakeDb {
   name = "noma_test";
   notes = new FakeTable<Note>();
@@ -109,6 +143,7 @@ class FakeDb {
   tombstones = new FakeTable<SyncTombstone>();
   syncMeta = new FakeTable<SyncState>();
   noteVersions = new FakeTable<NoteVersion>();
+  noteEmbeddings = new FakeEmbeddingTable();
 
   async transaction(...args: unknown[]): Promise<void> {
     const fn = args[args.length - 1] as () => Promise<void>;
@@ -520,5 +555,116 @@ describe("listVersions", () => {
     await seedVersion(fake, { noteId: note.id, content: "oldest", createdAt: 1_000 });
     const rows = await listVersions(db, note.id);
     expect(rows.map((r) => r.content)).toEqual(["newest", "middle", "oldest"]);
+  });
+});
+
+/* ---------------- Semantic vector maintenance (#8.5) ----------------
+ * Restores and permanent deletes write db.notes directly, bypassing
+ * updateNote's save hook, so they maintain the note's vector
+ * themselves: a vector must never describe content the note no longer
+ * has, and never outlive the note. */
+
+class MemoryStorage {
+  private values = new Map<string, string>();
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null;
+  }
+  setItem(key: string, value: string): void {
+    this.values.set(key, String(value));
+  }
+  removeItem(key: string): void {
+    this.values.delete(key);
+  }
+  clear(): void {
+    this.values.clear();
+  }
+}
+
+/** Gemini batch-embeddings endpoint stub: one fixed valid vector per text. */
+function stubGeminiEmbedFetch(): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const parsed = JSON.parse(String(init?.body ?? "")) as {
+        requests?: Array<{ content: { parts: Array<{ text: string }> } }>;
+      };
+      const texts = parsed.requests ?? [];
+      return new Response(JSON.stringify({ embeddings: texts.map(() => ({ values: [1, 0.2] })) }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }),
+  );
+}
+
+function vectorRowFor(note: Note): NoteEmbedding {
+  return {
+    noteId: note.id,
+    providerKey: "gemini|native|gemini-embedding-001|2",
+    dims: 2,
+    vector: new Float32Array([1, 0]),
+    contentHash: fnv1a(embeddedTextForNote(note)),
+    updatedAt: 1,
+  };
+}
+
+describe("semantic vector maintenance (#8.5)", () => {
+  beforeEach(() => {
+    // The fake db is named noma_test, so semantic maintenance resolves
+    // the AI record of owner "test" from this storage stand-in.
+    Object.defineProperty(globalThis, "window", {
+      value: { localStorage: new MemoryStorage(), dispatchEvent: () => true },
+      configurable: true,
+    });
+    vi.unstubAllGlobals();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("restoreVersion refreshes the vector so it matches the restored content, never the pre-restore content", async () => {
+    stubGeminiEmbedFetch();
+    saveAiRecord("test", {
+      enabled: true,
+      activePreset: "gemini",
+      providers: { gemini: { apiKey: "test-key" } },
+    });
+    const fake = new FakeDb();
+    const db = asDb(fake);
+    const note = await seedNote(fake, {
+      title: "Current title",
+      content: "<p>current body</p>",
+    });
+    const version = await seedVersion(fake, {
+      noteId: note.id,
+      title: "Earlier title",
+      content: "<p>earlier body</p>",
+    });
+    // An up-to-date vector for the CURRENT (pre-restore) content.
+    await fake.noteEmbeddings.put(vectorRowFor(note));
+    const preRestoreHash = fnv1a(embeddedTextForNote(note));
+
+    expect(await restoreVersion(db, version.id)).toBe(true);
+
+    const restored = await fake.notes.get(note.id);
+    expect(restored?.content).toContain("earlier body");
+    const row = await fake.noteEmbeddings.get(note.id);
+    expect(row).toBeDefined();
+    expect(row!.contentHash).toBe(fnv1a(embeddedTextForNote(restored!)));
+    expect(row!.contentHash).not.toBe(preRestoreHash);
+  });
+
+  it("deleteNoteForever removes the note's vector row with the note", async () => {
+    const fake = new FakeDb();
+    const db = asDb(fake);
+    const note = await seedNote(fake, { title: "Doomed", content: "<p>bye</p>" });
+    await fake.noteEmbeddings.put(vectorRowFor(note));
+    expect(await fake.noteEmbeddings.count()).toBe(1);
+
+    await deleteNoteForever(db, note.id);
+
+    expect(await fake.notes.get(note.id)).toBeUndefined();
+    expect(await fake.noteEmbeddings.get(note.id)).toBeUndefined();
   });
 });

@@ -7,6 +7,7 @@ import {
   type BackupRecord,
   type Folder,
   type Note,
+  type NoteEmbedding,
   type NoteVersion,
   type Reminder,
   type SyncState,
@@ -25,6 +26,7 @@ export class NomaDatabase extends Dexie {
   tombstones!: Table<SyncTombstone, string>;
   syncMeta!: Table<SyncState, string>;
   noteVersions!: Table<NoteVersion, string>;
+  noteEmbeddings!: Table<NoteEmbedding, string>;
 
   constructor(databaseName: string) {
     super(databaseName);
@@ -77,6 +79,24 @@ export class NomaDatabase extends Dexie {
       syncMeta: "id",
       noteVersions: "id, noteId",
     });
+
+    // v5 — Semantic search index: one embedding vector per note (see
+    // semantic.ts). Derived data, local-only like the version history:
+    // never part of backups or sync, and deliberately NOT copied by
+    // copyDatabase — each database/device rebuilds its own index.
+    this.version(5).stores({
+      notes: "id, updatedAt, createdAt, folderId, pinned, favorite, archived, deleted, *tagIds",
+      folders: "id, name, parentId",
+      tags: "id, name",
+      attachments: "id, noteId",
+      settings: "id",
+      backups: "id, createdAt",
+      reminders: "id, noteId, scheduledAt, status, createdAt, updatedAt",
+      tombstones: "id, entity, deletedAt",
+      syncMeta: "id",
+      noteVersions: "id, noteId",
+      noteEmbeddings: "noteId",
+    });
   }
 }
 
@@ -108,6 +128,10 @@ export async function copyDatabase(source: NomaDatabase, target: NomaDatabase): 
   // Settings contains account-specific security controls (appLockEnabled, unlockMethods,
   // passwordHash, passwordSalt, patternHash, patternSalt, failedAttempts, lockoutUntil).
   // The destination database's existing security settings must remain authoritative.
+  // The same deliberate omission covers `noteVersions` and `noteEmbeddings`:
+  // both are local-only derived data (history snapshots, search vectors)
+  // that a destination database rebuilds for itself — see db versions
+  // v4/v5. The explicit table list below is what enforces all of this.
   const [notes, folders, tags, attachments, backups, reminders] = await Promise.all([
     source.notes.toArray(),
     source.folders.toArray(),

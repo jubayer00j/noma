@@ -1,5 +1,6 @@
 import { type NomaDatabase, newId } from "./db";
 import { countWords, sanitizeHtml } from "./sanitize";
+import { maintainSemanticIndexForNote } from "./semantic";
 import type { Note, NoteVersion } from "./types";
 
 /**
@@ -119,5 +120,9 @@ export async function restoreVersion(db: NomaDatabase, versionId: string): Promi
     wordCount: countWords(content),
     updatedAt: Date.now(),
   });
+  // The restore writes directly (not via updateNote), so refresh the
+  // note's semantic vector here: the stored vector described the
+  // pre-restore content and must never be what search matches against.
+  await maintainSemanticIndexForNote(db, note.id);
   return true;
 }

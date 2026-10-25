@@ -66,7 +66,12 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { useOnline, useSettings } from "@/hooks/use-noma";
 import { useDatabase } from "@/lib/noma/DatabaseContext";
 import { useAuth } from "@/lib/noma/auth";
-import { aiActionsAvailable, getAiSettings, type AiSettings } from "@/lib/noma/ai";
+import {
+  aiActionsAvailable,
+  getAiEmbeddingTarget,
+  getAiSettings,
+  type AiSettings,
+} from "@/lib/noma/ai";
 import { AiDialog, type AiDialogMode } from "./ai-dialog";
 import { AI_SETTINGS_CHANGED_EVENT } from "./ai-section";
 import { useAppLock } from "@/lib/noma/AppLockContext";
@@ -104,6 +109,7 @@ import {
   cleanupOrphanedReminders,
 } from "@/lib/noma/notes";
 import { highlightTerms, searchNotes } from "@/lib/noma/search";
+import { mergeSemanticResults, semanticScores } from "@/lib/noma/semantic";
 import { getOrCreateDailyNote } from "@/lib/noma/daily";
 import { restoreVersion } from "@/lib/noma/versions";
 import {
@@ -1233,7 +1239,39 @@ export function Workspace() {
     [db, versionHistoryNote, flushPendingSave],
   );
 
-  const searchResults = useMemo(
+  // Semantic search (#8.5): when a valid local index exists, embed the
+  // query (debounced) and blend meaning-based scores into the keyword
+  // results. Any failure — offline, quota, provider down — leaves the
+  // keyword results exactly as they were; there is no error UI here.
+  const [semanticScoreMap, setSemanticScoreMap] = useState<Map<string, number> | null>(null);
+  useEffect(() => {
+    if (!searchOpen || !query.trim() || !db) {
+      setSemanticScoreMap(null);
+      return;
+    }
+    let cancelled = false;
+    const handle = setTimeout(() => {
+      void (async () => {
+        try {
+          const target = getAiEmbeddingTarget(ownerId);
+          if (!target) {
+            if (!cancelled) setSemanticScoreMap(null);
+            return;
+          }
+          const scores = await semanticScores(db, query, target);
+          if (!cancelled) setSemanticScoreMap(scores.size ? scores : null);
+        } catch {
+          if (!cancelled) setSemanticScoreMap(null);
+        }
+      })();
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [searchOpen, query, db, ownerId, aiSettings]);
+
+  const keywordResults = useMemo(
     () =>
       searchOpen
         ? searchNotes(
@@ -1244,6 +1282,16 @@ export function Workspace() {
           )
         : [],
     [searchOpen, query, allNotes, allFolders, allTags],
+  );
+
+  const searchResults = useMemo(
+    () =>
+      mergeSemanticResults(
+        keywordResults,
+        semanticScoreMap,
+        allNotes.filter((note) => !note.deleted),
+      ),
+    [keywordResults, semanticScoreMap, allNotes],
   );
 
   if (dbLoading || !db) {

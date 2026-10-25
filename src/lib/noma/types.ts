@@ -82,6 +82,25 @@ export interface NoteVersion {
   createdAt: number;
 }
 
+/**
+ * One note's semantic-search vector (see semantic.ts). Derived data,
+ * like the version history: local to the device, never part of the
+ * backup payload, never synced — a second device rebuilds its own.
+ * `providerKey` identifies the embedding space the vector lives in
+ * ("<slotId>:<embeddingModel>:<dims>"); vectors from different spaces
+ * are never compared or mixed. `vector` is L2-normalised, so cosine
+ * similarity is a plain dot product.
+ */
+export interface NoteEmbedding {
+  noteId: string;
+  providerKey: string;
+  dims: number;
+  vector: Float32Array;
+  /** FNV-1a (hex) of the exact text that was embedded. */
+  contentHash: string;
+  updatedAt: number;
+}
+
 export interface Folder {
   id: string;
   name: string;

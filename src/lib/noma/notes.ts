@@ -8,6 +8,7 @@ import { countWords, sanitizeHtml } from "./sanitize";
 import { notePreviewText } from "./note-export";
 import { cleanupOrphanedAttachments } from "./media";
 import { recordTombstone } from "./sync";
+import { maintainSemanticIndexForNote } from "./semantic";
 import { clearVersions, snapshotIfSettled } from "./versions";
 import type {
   AlarmToneMode,
@@ -69,6 +70,20 @@ export async function updateNote(
     }
   }
   await db.notes.update(id, next);
+  // Semantic search maintenance (#8.5): when a patch changes what a
+  // note's embedding is made of (title/content) or whether it may keep
+  // one (deleted/lock/template), refresh its vector — fire-and-forget,
+  // best-effort, and a no-op unless a valid index already exists (the
+  // user's Settings build was the opt-in). See semantic.ts.
+  if (
+    patch.title !== undefined ||
+    patch.content !== undefined ||
+    patch.deleted !== undefined ||
+    patch.lock !== undefined ||
+    patch.isTemplate !== undefined
+  ) {
+    void maintainSemanticIndexForNote(db, id);
+  }
 }
 
 export async function duplicateNote(db: NomaDatabase, id: string): Promise<Note | null> {
@@ -162,14 +177,25 @@ export async function deleteNoteForever(db: NomaDatabase, id: string): Promise<v
     await cancelNotification(reminder.id, reminder.notificationId);
   }
 
-  await db.transaction("rw", db.notes, db.attachments, db.reminders, db.noteVersions, async () => {
-    await db.attachments.where("noteId").equals(id).delete();
-    await db.reminders.where("noteId").equals(id).delete();
-    // Permanent deletion purges the note's version history with it
-    // (soft-delete/trash keeps history — a restored note keeps its past).
-    await clearVersions(db, id);
-    await db.notes.delete(id);
-  });
+  await db.transaction(
+    "rw",
+    db.notes,
+    db.attachments,
+    db.reminders,
+    db.noteVersions,
+    db.noteEmbeddings,
+    async () => {
+      await db.attachments.where("noteId").equals(id).delete();
+      await db.reminders.where("noteId").equals(id).delete();
+      // Permanent deletion purges the note's version history with it
+      // (soft-delete/trash keeps history — a restored note keeps its past).
+      await clearVersions(db, id);
+      // The semantic vector is derived from the note's content and dies
+      // with it — no row may outlive the note (semantic.ts).
+      if (db.noteEmbeddings) await db.noteEmbeddings.delete(id);
+      await db.notes.delete(id);
+    },
+  );
 
   // The note tombstone cascades to its attachments and reminders on other
   // devices, so they don't need markers of their own.

@@ -528,7 +528,7 @@ export function SettingsPage() {
               Optional. Bring your own Gemini key for note summaries and tag suggestions — only ever
               when you tap.
             </p>
-            <AiSection ownerId={ownerId} />
+            <AiSection ownerId={ownerId} db={db} />
           </div>
         </div>
 
