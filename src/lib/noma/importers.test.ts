@@ -600,6 +600,47 @@ describe("parseMarkdownFiles — ordered list markers", () => {
         '<ol type="a"><li><p>Alpha</p></li><li><p>Beta</p></li></ol>',
     );
   });
+
+  it("imports a lettered list that runs past z (aa, ab, …)", async () => {
+    // Spreadsheet-style markers, as the exporter emits them (note-export's
+    // toAlpha): a … z, then aa, ab — one list, not prose from item 27 on.
+    const markers = Array.from({ length: 28 }, (_, k) => {
+      let n = k + 1;
+      let marker = "";
+      while (n > 0) {
+        n -= 1;
+        marker = String.fromCharCode(97 + (n % 26)) + marker;
+        n = Math.floor(n / 26);
+      }
+      return `${marker}. Item ${k + 1}`;
+    });
+    const result = await parseMarkdownFiles([mdFile({ text: markers.join("\n") })]);
+    const html = result.notes[0]!.contentHtml;
+    expect(html.startsWith('<ol type="a">')).toBe(true);
+    expect(html.match(/<li>/g)).toHaveLength(28);
+    expect(html.endsWith("<li><p>Item 27</p></li><li><p>Item 28</p></li></ol>")).toBe(true);
+  });
+
+  it("keeps a lettered start past z", async () => {
+    const lower = await parseMarkdownFiles([mdFile({ text: "z. x\naa. y\nab. z" })]);
+    expect(lower.notes[0]!.contentHtml).toBe(
+      '<ol type="a" start="26"><li><p>x</p></li><li><p>y</p></li><li><p>z</p></li></ol>',
+    );
+
+    const upper = await parseMarkdownFiles([mdFile({ text: "Z. x\nAA. y" })]);
+    expect(upper.notes[0]!.contentHtml).toBe(
+      '<ol type="A" start="26"><li><p>x</p></li><li><p>y</p></li></ol>',
+    );
+  });
+
+  it("keeps unconfirmed multi-letter lines as prose", async () => {
+    const lone = await parseMarkdownFiles([mdFile({ text: "aa. Some sentence." })]);
+    expect(lone.notes[0]!.contentHtml).toBe("<p>aa. Some sentence.</p>");
+
+    // Skipping ab breaks the sequence, so neither line is a list item.
+    const skipped = await parseMarkdownFiles([mdFile({ text: "aa. x\nac. y" })]);
+    expect(skipped.notes[0]!.contentHtml).toBe("<p>aa. x ac. y</p>");
+  });
 });
 
 /* ---------------- Markdown in a ZIP ---------------- */

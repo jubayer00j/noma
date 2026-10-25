@@ -637,10 +637,26 @@ interface LetteredCandidate {
   indent: number;
   text: string;
   upper: boolean;
-  /** 1–26 when the marker is a single letter. */
+  /**
+   * Spreadsheet-style alpha value of the marker (a=1 … z=26, aa=27, ab=28)
+   * when it is written in one consistent case; null for mixed-case markers.
+   */
   alpha: number | null;
   /** Value when the marker is a valid roman numeral. */
   roman: number | null;
+}
+
+/**
+ * Spreadsheet-style (bijective base-26) value of a letter marker, matching
+ * the exporter's `toAlpha`: a=1 … z=26, aa=27, az=52, ba=53. Mixed-case
+ * markers belong to neither system and return null.
+ */
+function parseAlphaMarker(marker: string): number | null {
+  if (marker !== marker.toLowerCase() && marker !== marker.toUpperCase()) return null;
+  const lower = marker.toLowerCase();
+  let value = 0;
+  for (const ch of lower) value = value * 26 + (ch.charCodeAt(0) - "a".charCodeAt(0) + 1);
+  return value;
 }
 
 /**
@@ -654,9 +670,8 @@ function parseLetteredCandidate(line: string): LetteredCandidate | null {
   if (!match) return null;
   const marker = match[2]!;
   const roman = parseRomanNumeral(marker);
-  const alpha =
-    marker.length === 1 ? marker.toLowerCase().charCodeAt(0) - "a".charCodeAt(0) + 1 : null;
-  if (roman === null && alpha === null) return null; // e.g. "ab." is neither system
+  const alpha = parseAlphaMarker(marker);
+  if (roman === null && alpha === null) return null; // mixed-case: neither system
   return {
     indent: listIndent(match[1]!),
     text: match[3]!,
