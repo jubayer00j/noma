@@ -245,7 +245,7 @@ export function ImportSection({ db, ownerId }: { db: NomaDatabase; ownerId: stri
       )}
 
       {summary && (
-        <div className="rounded-lg border border-border bg-card p-4 text-sm">
+        <div className="rounded-2xl border border-border bg-card p-4 text-sm">
           <p>
             Imported {summary.imported} note{summary.imported === 1 ? "" : "s"}
             {summary.duplicates > 0 && ` · skipped ${summary.duplicates} already imported`}
