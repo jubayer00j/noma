@@ -2,6 +2,23 @@
 
 All notable changes to Noma. Dates are merge dates on `main`.
 
+## v1.2.0 — 2026-10-25
+
+The second feature release, distilled from the 2026-10-25 programme (PRs #90–#96, detailed in the dated entries below).
+
+**New**
+
+- **Share / Export any note:** every note can leave Noma on its own — as self-contained HTML, Markdown, or plain text, via the share sheet or as a saved file. Locked notes export only through the unlock gate (PR #92).
+- **Semantic search:** search now finds notes by meaning, not just words. Build the index once in Settings → AI features and conceptually related notes surface even with no shared words, across languages. Vectors are stored only on this device — never backed up or synced — and locked notes are never indexed (PR #95).
+- **Settings redesign:** the eight categories now sit in four grouped cards with icon tiles, and every sub-screen header carries its category's tile. Presentation only — every setting behaves exactly as before (PR #96).
+
+**Fixed**
+
+- Typed numbered lists no longer lose their numbers at save time, and list words count and preview properly (PR #90).
+- The app header no longer slides under the Android status bar (PR #91).
+- Markdown imports round-trip faithfully: re-importing a Noma Markdown export keeps list starts and lettered/roman lists instead of renumbering and flattening them (PR #93).
+- All Notes previews keep their list markers — numbers, bullets, and checkboxes — instead of a flat run of words (PR #94).
+
 ## 2026-10-25
 
 ### App header no longer slides under the status bar — PR #91

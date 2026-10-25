@@ -116,7 +116,7 @@ function Index() {
         </section>
 
         <footer className="mt-12 flex items-center justify-between border-t border-border/60 pt-6 text-xs text-muted-foreground">
-          <span>Noma v1.1.0 • Calm, offline-first notes</span>
+          <span>Noma v1.2.0 • Calm, offline-first notes</span>
           <a href="/contact" className="hover:text-foreground underline">
             Contact & Feedback
           </a>

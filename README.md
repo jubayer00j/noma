@@ -63,6 +63,7 @@ Noma is built around a local-first architecture where device storage (IndexedDB 
 - **Links & Quotes:** URL hyperlinking, blockquotes, and styled code blocks.
 - **Dividers & Tables:** Horizontal rule dividers and rich-text tables with customizable rows, columns, and headers.
 - **Image Embedding:** Local photo uploads with client-side canvas compression and inline web image URLs.
+- **Share / Export Any Note:** Send a single note out as HTML, Markdown, or plain text — via the share sheet or saved as a file. HTML exports are self-contained (images embedded as data URLs, opens in any browser); Markdown round-trips through Noma's own importer with list numbers and lettered/roman markers intact. Locked notes export only after passing the unlock gate — never from ciphertext.
 
 ### Organization
 
@@ -135,6 +136,7 @@ Noma is built around a local-first architecture where device storage (IndexedDB 
 
 - **Bring Your Own Key:** AI is off by default and entirely optional. Add your own API key to enable **Summarize** and **Suggest tags** on a note — one tap, one note, one call; nothing is ever sent automatically.
 - **Providers:** Gemini, plus OpenAI-compatible providers — OpenAI, OpenRouter, Groq, Together, DeepSeek, Mistral, or a custom endpoint. Each provider keeps its own key and model, stored only in a per-account on-device record — keys never appear in backups or sync. Locked, template, and trashed notes are excluded.
+- **Semantic Search:** Build a search index once in Settings → AI features, and search starts finding notes by meaning, not just words — a query can surface a note that never uses its words, even across languages. Note vectors live only on this device (never backed up, never synced), locked/template/trashed notes are never indexed, and changing provider or embedding model requires a rebuild rather than ever mixing vectors.
 
 ### Android
 
@@ -153,7 +155,7 @@ Noma is built around a local-first architecture where device storage (IndexedDB 
 
 ### Settings
 
-- **Eight Categories:** Settings opens on a list — Sync & backup, Security, Appearance, Writing, AI features, Data, Account, About — and every row shows its current state at a glance ("Connected · Scheduled · Daily", your theme's name, "App lock on · Encryption off").
+- **Eight Categories:** Settings opens on a grouped list — Sync & backup, Security, Appearance, Writing, AI features, Data, Account, About — arranged in four cards with icon tiles, and every row shows its current state at a glance ("Connected · Scheduled · Daily", your theme's name, "App lock on · Encryption off").
 
 ### Contact & Feedback
 

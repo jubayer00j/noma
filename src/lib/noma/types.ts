@@ -275,7 +275,7 @@ export function withBackupModeMigration(
   return merged;
 }
 
-export const NOMA_VERSION = "1.1.0";
+export const NOMA_VERSION = "1.2.0";
 export const BACKUP_FORMAT_VERSION = 2;
 
 export const DEFAULT_SETTINGS: AppSettings = {
