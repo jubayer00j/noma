@@ -27,6 +27,13 @@ All notable changes to Noma. Dates are merge dates on `main`.
 - Delivery: on Android the file is staged in the app cache and handed to the native share sheet (@capacitor/share + @capacitor/filesystem, new in this PR, both lockfiles regenerated); "Save file" reuses the backup export's SAF plumbing. On web, Save is a Blob download and Share appears only when the browser can share files (Web Share API with a real File — no text-only fallback).
 - Proof: 26 new converter tests (typed-list numbers in both text formats, letter/roman markers, task checkboxes, tables, image embedding and degradation, chart placeholders, chip labels, filename sanitising incl. Bengali and the 80-char cap). Full suite green.
 
+### Note previews keep their list markers — PR #94
+
+- Bug fix, found on device: the All Notes card preview was built with the flat plain-text extractor, which knows words, not lists — every list marker was stripped, so a note structured as "1. Hlw" with bullet sub-lists under each item previewed as the unordered run "Hlw 1 2 3 Hi 1 2 3 Hey 1 2 3". The read view (real HTML) showed the ordering fine; only the card lost it.
+- The preview now comes from a structure-aware builder in note-export.ts that reuses the plain-text export walker: ordered items keep their computed markers (the list's `start` and `type` are honoured — numeric, lettered including "aa" past z, and roman), bullets get "•", task items show "• [ ]" / "• [x]", and nested items keep their own markers. The note title (the card shows it separately) and link URLs stay out, and the text is flattened to the same space-separated flow — and the same length truncation — as before.
+- Deliberately preview-only: word counts, search snippets and AI prompts keep the flat extractor unchanged, so markers never count as words and never become searchable text.
+- Proof: new tests pin the exact preview string for the reported note shape, start/type honours, task checkboxes, nested markers, unchanged plain-paragraph previews, and word-count isolation. Full suite green.
+
 ## v1.1.0 — 2026-10-24
 
 The first feature release since 1.0.1, distilled from the 2026-10-22 → 2026-10-24 programme (PRs #56–#88, detailed in the dated entries below) — and the first release to pass the full device-acceptance checklist (95 rows, all positive) before shipping.
