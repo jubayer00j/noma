@@ -8,6 +8,7 @@ import { countWords, sanitizeHtml } from "./sanitize";
 import { notePreviewText } from "./note-export";
 import { cleanupOrphanedAttachments } from "./media";
 import { recordTombstone } from "./sync";
+import { maintainSemanticIndexForNote } from "./semantic";
 import { clearVersions, snapshotIfSettled } from "./versions";
 import type {
   AlarmToneMode,
@@ -69,6 +70,20 @@ export async function updateNote(
     }
   }
   await db.notes.update(id, next);
+  // Semantic search maintenance (#8.5): when a patch changes what a
+  // note's embedding is made of (title/content) or whether it may keep
+  // one (deleted/lock/template), refresh its vector — fire-and-forget,
+  // best-effort, and a no-op unless a valid index already exists (the
+  // user's Settings build was the opt-in). See semantic.ts.
+  if (
+    patch.title !== undefined ||
+    patch.content !== undefined ||
+    patch.deleted !== undefined ||
+    patch.lock !== undefined ||
+    patch.isTemplate !== undefined
+  ) {
+    void maintainSemanticIndexForNote(db, id);
+  }
 }
 
 export async function duplicateNote(db: NomaDatabase, id: string): Promise<Note | null> {

@@ -1,5 +1,5 @@
-import { ExternalLink, KeyRound, Loader2, Sparkles } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { ExternalLink, KeyRound, Loader2, Search, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +18,8 @@ import {
   GEMINI_MODEL_LABEL,
   OPENAI_PRESETS,
   aiSlotChanged,
+  embeddingCapabilityForPreset,
+  getAiEmbeddingTarget,
   getAiRecord,
   normalizeBaseUrl,
   saveAiRecord,
@@ -26,6 +28,15 @@ import {
   type AiRecord,
   type AiSettings,
 } from "@/lib/noma/ai";
+import type { NomaDatabase } from "@/lib/noma/db";
+import {
+  buildIndex,
+  getIndexStatus,
+  reconcileIndex,
+  removeIndex,
+  type IndexProgress,
+  type SemanticIndexStatus,
+} from "@/lib/noma/semantic";
 
 const tap =
   "transition-transform active:scale-[0.99] motion-reduce:transition-none motion-reduce:active:scale-100";
@@ -56,7 +67,7 @@ function maskKey(apiKey: string): string {
  * endpoint) let any provider's key in, with the model as free text —
  * never a hardcoded model list.
  */
-export function AiSection({ ownerId }: { ownerId: string | null }) {
+export function AiSection({ ownerId, db }: { ownerId: string | null; db: NomaDatabase | null }) {
   const [record, setRecord] = useState<AiRecord | null>(() => getAiRecord(ownerId));
   const refresh = useCallback(() => {
     setRecord(getAiRecord(ownerId));
@@ -76,6 +87,7 @@ export function AiSection({ ownerId }: { ownerId: string | null }) {
   const [replacingKey, setReplacingKey] = useState(false);
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
   const [modelDraft, setModelDraft] = useState("");
+  const [embeddingModelDraft, setEmbeddingModelDraft] = useState("");
   const [testState, setTestState] = useState<
     | { kind: "idle" }
     | { kind: "busy" }
@@ -92,6 +104,9 @@ export function AiSection({ ownerId }: { ownerId: string | null }) {
     setPresetDraft(active);
     setKeyDraft("");
     setReplacingKey(false);
+    setEmbeddingModelDraft(
+      slot?.embeddingModel ?? embeddingCapabilityForPreset(active).defaultModel ?? "",
+    );
     if (active === "gemini") {
       setBaseUrlDraft("");
       setModelDraft("");
@@ -131,6 +146,103 @@ export function AiSection({ ownerId }: { ownerId: string | null }) {
   // or even its mask — is never shown here.
   const enteringKey = !hasSlotKey || replacingKey;
 
+  /* ---- Semantic search index (#8.5): status + build/update/remove ---- */
+
+  const [indexStatus, setIndexStatus] = useState<SemanticIndexStatus | null>(null);
+  const [indexBusy, setIndexBusy] = useState<"build" | "update" | "remove" | null>(null);
+  const [indexProgress, setIndexProgress] = useState<IndexProgress | null>(null);
+  const [indexMessage, setIndexMessage] = useState<string | null>(null);
+  const indexAbortRef = useRef<AbortController | null>(null);
+
+  // The status is derived from the SAVED record's target — drafts
+  // that haven't been saved yet don't describe the index on disk.
+  const refreshIndexStatus = useCallback(async () => {
+    if (!db) {
+      setIndexStatus(null);
+      return;
+    }
+    try {
+      setIndexStatus(await getIndexStatus(db, getAiEmbeddingTarget(ownerId)));
+    } catch {
+      setIndexStatus(null);
+    }
+  }, [db, ownerId, record]);
+
+  useEffect(() => {
+    void refreshIndexStatus();
+  }, [refreshIndexStatus]);
+
+  async function runBuildIndex() {
+    if (!db || indexBusy) return;
+    const target = getAiEmbeddingTarget(ownerId);
+    if (!target) return;
+    const controller = new AbortController();
+    indexAbortRef.current = controller;
+    setIndexBusy("build");
+    setIndexMessage(null);
+    setIndexProgress({ done: 0, total: 0 });
+    try {
+      const { indexed } = await buildIndex(db, target, {
+        signal: controller.signal,
+        onProgress: setIndexProgress,
+      });
+      setIndexMessage(
+        indexed > 0
+          ? `Search index built — ${indexed} note${indexed === 1 ? "" : "s"} indexed.`
+          : "No notes to index yet.",
+      );
+    } catch (err) {
+      setIndexMessage(
+        (err as Error | null)?.name === "AbortError"
+          ? "Build cancelled — Update index can finish it later."
+          : err instanceof AiError
+            ? err.message
+            : "Something went wrong. Try again.",
+      );
+    } finally {
+      indexAbortRef.current = null;
+      setIndexBusy(null);
+      setIndexProgress(null);
+      await refreshIndexStatus();
+    }
+  }
+
+  async function runUpdateIndex() {
+    if (!db || indexBusy) return;
+    const target = getAiEmbeddingTarget(ownerId);
+    if (!target) return;
+    setIndexBusy("update");
+    setIndexMessage(null);
+    try {
+      const result = await reconcileIndex(db, target);
+      setIndexMessage(
+        result.embedded === 0 && result.deleted === 0
+          ? "Search index is up to date."
+          : `Search index updated — ${result.embedded} embedded, ${result.deleted} removed.`,
+      );
+    } catch (err) {
+      setIndexMessage(err instanceof AiError ? err.message : "Something went wrong. Try again.");
+    } finally {
+      setIndexBusy(null);
+      await refreshIndexStatus();
+    }
+  }
+
+  async function runRemoveIndex() {
+    if (!db || indexBusy) return;
+    setIndexBusy("remove");
+    setIndexMessage(null);
+    try {
+      await removeIndex(db);
+      setIndexMessage("Search index removed. Search is keyword-only again.");
+    } catch {
+      setIndexMessage("Something went wrong. Try again.");
+    } finally {
+      setIndexBusy(null);
+      await refreshIndexStatus();
+    }
+  }
+
   function persist(next: AiRecord) {
     saveAiRecord(ownerId, next);
     emitAiChanged();
@@ -152,6 +264,9 @@ export function AiSection({ ownerId }: { ownerId: string | null }) {
     setPresetDraft(id);
     setKeyDraft("");
     setReplacingKey(false);
+    setEmbeddingModelDraft(
+      nextSlot?.embeddingModel ?? embeddingCapabilityForPreset(id).defaultModel ?? "",
+    );
     if (id === "gemini") {
       setBaseUrlDraft("");
       setModelDraft("");
@@ -177,15 +292,20 @@ export function AiSection({ ownerId }: { ownerId: string | null }) {
 
   /** The selected provider's slot as the drafts describe it. */
   function buildCandidateSlot(key: string): AiProviderSlot {
+    // The embedding model rides the same slot save as key + chat
+    // model (semantic search, #8.5) — one save path, never a second.
+    const embeddingModel = embeddingModelDraft.trim();
     if (presetDraft === "gemini") {
       // A stored Gemini model override is not editable here, but it
       // belongs to the Gemini slot and survives a key save.
       const next: AiProviderSlot = { apiKey: key };
       if (slot?.model) next.model = slot.model;
+      if (embeddingModel) next.embeddingModel = embeddingModel;
       return next;
     }
     const next: AiProviderSlot = { apiKey: key };
     if (modelDraft.trim()) next.model = modelDraft.trim();
+    if (embeddingModel) next.embeddingModel = embeddingModel;
     if (presetDraft === "custom") next.baseUrl = normalizeBaseUrl(baseUrlDraft);
     return next;
   }
@@ -269,7 +389,14 @@ export function AiSection({ ownerId }: { ownerId: string | null }) {
   // one". Drives the Save button and the test-pass copy below.
   const settingsDirty =
     presetDraft !== activePreset ||
-    aiSlotChanged(slot, buildCandidateSlot(slotKey), preset?.defaultModel ?? "");
+    aiSlotChanged(
+      slot,
+      buildCandidateSlot(slotKey),
+      preset?.defaultModel ?? "",
+      embeddingCapabilityForPreset(presetDraft).defaultModel ?? "",
+    );
+
+  const semanticCapability = embeddingCapabilityForPreset(presetDraft);
 
   return (
     <div className="space-y-5">
@@ -485,6 +612,128 @@ export function AiSection({ ownerId }: { ownerId: string | null }) {
           )}
 
           {!openAi && <p className="text-xs text-muted-foreground">Model: {GEMINI_MODEL_LABEL}</p>}
+
+          <div className="space-y-3 border-t pt-5">
+            <div className="flex items-center gap-2">
+              <Search className="size-4 text-muted-foreground" aria-hidden="true" />
+              <Label>Semantic search</Label>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Find notes by meaning, not just words — a search can surface a note that never uses
+              the words you typed. The index lives on this device only: it is never backed up or
+              synced, and locked notes are never indexed.
+            </p>
+
+            {semanticCapability.mode === "none" ? (
+              <p className="text-sm text-muted-foreground">
+                Semantic search isn't available with {providerName} — it has no embeddings service.
+                Switch to a provider with embeddings to use it.
+              </p>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="noma-ai-embedding-model">Embedding model</Label>
+                  <Input
+                    id="noma-ai-embedding-model"
+                    className="h-11 font-mono text-xs"
+                    value={embeddingModelDraft}
+                    onChange={(event) => setEmbeddingModelDraft(event.target.value)}
+                    placeholder={
+                      semanticCapability.defaultModel ??
+                      (presetDraft === "mistral" ? "e.g. mistral-embed" : "Embedding model id")
+                    }
+                    autoComplete="off"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Saved with this provider's settings above. Changing it means the index must be
+                    rebuilt — vectors from different models can't be mixed.
+                  </p>
+                </div>
+
+                {db && indexStatus && (
+                  <p className="text-sm text-muted-foreground" role="status">
+                    {indexStatus.state === "not-built" &&
+                      `No search index yet. Building one sends each note's text to ${providerName} once, under your key, and keeps only the resulting vectors on this device.`}
+                    {indexStatus.state === "invalid-provider" &&
+                      `The index on this device was built with ${indexStatus.embeddingModel ?? "a different embedding model"} — rebuild it to use semantic search with the current provider. Search stays keyword-only until then.`}
+                    {indexStatus.state === "ready" &&
+                      `Indexed ${indexStatus.indexedCount} note${indexStatus.indexedCount === 1 ? "" : "s"} · ${indexStatus.embeddingModel ?? "unknown model"} · ${
+                        indexStatus.staleCount > 0
+                          ? `${indexStatus.staleCount} changed since`
+                          : "up to date"
+                      }`}
+                  </p>
+                )}
+
+                {settingsDirty && (
+                  <p className="text-xs text-muted-foreground">
+                    Save the provider settings above first — the index tools use the saved provider.
+                  </p>
+                )}
+
+                {db && (
+                  <div className="flex flex-wrap gap-2">
+                    {(!indexStatus || indexStatus.state !== "ready") && (
+                      <Button
+                        className={`h-11 ${tap}`}
+                        disabled={indexBusy !== null || settingsDirty || !hasSlotKey}
+                        onClick={() => void runBuildIndex()}
+                      >
+                        {indexBusy === "build" && (
+                          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                        )}{" "}
+                        {indexStatus?.state === "invalid-provider"
+                          ? "Rebuild search index"
+                          : "Build search index"}
+                      </Button>
+                    )}
+                    {indexStatus?.state === "ready" && (
+                      <Button
+                        className={`h-11 ${tap}`}
+                        disabled={indexBusy !== null || settingsDirty}
+                        onClick={() => void runUpdateIndex()}
+                      >
+                        {indexBusy === "update" && (
+                          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                        )}{" "}
+                        Update index
+                      </Button>
+                    )}
+                    {indexBusy === "build" && (
+                      <Button
+                        variant="outline"
+                        className={`h-11 ${tap}`}
+                        onClick={() => indexAbortRef.current?.abort()}
+                      >
+                        Cancel
+                      </Button>
+                    )}
+                    {indexStatus && indexStatus.indexedCount > 0 && indexBusy !== "build" && (
+                      <Button
+                        variant="ghost"
+                        className="h-11 text-destructive hover:text-destructive"
+                        disabled={indexBusy !== null}
+                        onClick={() => void runRemoveIndex()}
+                      >
+                        Remove index
+                      </Button>
+                    )}
+                  </div>
+                )}
+
+                {indexBusy === "build" && indexProgress && indexProgress.total > 0 && (
+                  <p className="text-xs text-muted-foreground" role="status">
+                    Indexing {indexProgress.done} of {indexProgress.total}…
+                  </p>
+                )}
+                {indexMessage && (
+                  <p className="text-sm text-muted-foreground" role="status">
+                    {indexMessage}
+                  </p>
+                )}
+              </>
+            )}
+          </div>
         </>
       )}
     </div>

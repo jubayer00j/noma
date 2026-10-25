@@ -11,6 +11,9 @@ import {
   aiProviderSettingsChanged,
   aiSlotChanged,
   clearAiSettings,
+  embedTexts,
+  embeddingCapabilityForPreset,
+  getAiEmbeddingTarget,
   getAiRecord,
   getAiSettings,
   normalizeAiRecord,
@@ -1150,5 +1153,322 @@ describe("AI key containment (multiple provider slots)", () => {
 
     const payload = await readBackupZip(blob, OWNER);
     for (const key of keys) expect(JSON.stringify(payload)).not.toContain(key);
+  });
+});
+
+/* ---------------- Embeddings: slot storage + target resolution (#8.5) ---------------- */
+
+describe("embedding model slot storage", () => {
+  it("round-trips a slot's embeddingModel through the record", () => {
+    saveAiRecord(OWNER, {
+      enabled: true,
+      activePreset: "openai",
+      providers: {
+        openai: { apiKey: API_KEY, model: "gpt-4o-mini", embeddingModel: "text-embedding-3-large" },
+      },
+    });
+    expect(getAiRecord(OWNER)?.providers["openai"]?.embeddingModel).toBe("text-embedding-3-large");
+    // The chat projection is unchanged by the extra slot field.
+    expect(getAiSettings(OWNER)).toEqual({
+      enabled: true,
+      apiKey: API_KEY,
+      provider: "openai-compatible",
+      baseUrl: "https://api.openai.com/v1",
+      model: "gpt-4o-mini",
+    });
+  });
+
+  it("loads records written before embeddingModel existed, unchanged", () => {
+    window.localStorage.setItem(
+      `noma-ai-v1-${OWNER}`,
+      JSON.stringify({
+        enabled: true,
+        activePreset: "gemini",
+        providers: { gemini: { apiKey: API_KEY } },
+      }),
+    );
+    const record = getAiRecord(OWNER);
+    expect(record?.providers["gemini"]).toEqual({ apiKey: API_KEY });
+  });
+
+  it("carries embeddingModel through the flat saveAiSettings write", () => {
+    saveAiSettings(OWNER, {
+      enabled: true,
+      apiKey: API_KEY,
+      provider: "openai-compatible",
+      baseUrl: "https://api.openai.com/v1",
+      model: "gpt-4o-mini",
+      embeddingModel: "text-embedding-3-small",
+    } as Parameters<typeof saveAiSettings>[1]);
+    expect(getAiRecord(OWNER)?.providers["openai"]?.embeddingModel).toBe("text-embedding-3-small");
+  });
+
+  it("counts an embedding-model edit as a slot change", () => {
+    const saved = { apiKey: API_KEY, embeddingModel: "text-embedding-3-small" };
+    expect(aiSlotChanged(saved, { ...saved })).toBe(false);
+    expect(aiSlotChanged(saved, { ...saved, embeddingModel: "text-embedding-3-large" })).toBe(true);
+    // An unset embedding model and the preset default are the same slot.
+    expect(
+      aiSlotChanged(
+        { apiKey: API_KEY },
+        { apiKey: API_KEY, embeddingModel: "text-embedding-3-small" },
+        "",
+        "text-embedding-3-small",
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("getAiEmbeddingTarget", () => {
+  it("resolves the Gemini default target", () => {
+    saveAiRecord(OWNER, {
+      enabled: true,
+      activePreset: "gemini",
+      providers: { gemini: { apiKey: API_KEY } },
+    });
+    const target = getAiEmbeddingTarget(OWNER);
+    expect(target?.presetId).toBe("gemini");
+    expect(target?.mode).toBe("native");
+    expect(target?.embeddingModel).toBe("gemini-embedding-001");
+    expect(target?.settings.apiKey).toBe(API_KEY);
+  });
+
+  it("prefers the slot's saved embedding model over the default", () => {
+    saveAiRecord(OWNER, {
+      enabled: true,
+      activePreset: "gemini",
+      providers: { gemini: { apiKey: API_KEY, embeddingModel: "gemini-embedding-001" } },
+    });
+    expect(getAiEmbeddingTarget(OWNER)?.embeddingModel).toBe("gemini-embedding-001");
+    saveAiRecord(OWNER, {
+      enabled: true,
+      activePreset: "openai",
+      providers: { openai: { apiKey: API_KEY, embeddingModel: "text-embedding-3-large" } },
+    });
+    expect(getAiEmbeddingTarget(OWNER)?.embeddingModel).toBe("text-embedding-3-large");
+  });
+
+  it("is null when AI is off, keyless, or the preset has no embeddings service", () => {
+    saveAiRecord(OWNER, {
+      enabled: false,
+      activePreset: "gemini",
+      providers: { gemini: { apiKey: API_KEY } },
+    });
+    expect(getAiEmbeddingTarget(OWNER)).toBeNull();
+
+    saveAiRecord(OWNER, { enabled: true, activePreset: "gemini", providers: {} });
+    expect(getAiEmbeddingTarget(OWNER)).toBeNull();
+
+    saveAiRecord(OWNER, {
+      enabled: true,
+      activePreset: "groq",
+      providers: { groq: { apiKey: API_KEY } },
+    });
+    expect(getAiEmbeddingTarget(OWNER)).toBeNull();
+    expect(embeddingCapabilityForPreset("groq").mode).toBe("none");
+    expect(embeddingCapabilityForPreset("deepseek").mode).toBe("none");
+  });
+
+  it("is null for a compatible preset with no default until the user sets a model", () => {
+    saveAiRecord(OWNER, {
+      enabled: true,
+      activePreset: "together",
+      providers: { together: { apiKey: API_KEY } },
+    });
+    expect(getAiEmbeddingTarget(OWNER)).toBeNull();
+    saveAiRecord(OWNER, {
+      enabled: true,
+      activePreset: "together",
+      providers: { together: { apiKey: API_KEY, embeddingModel: "BAAI/bge-large-en-v1.5" } },
+    });
+    expect(getAiEmbeddingTarget(OWNER)?.embeddingModel).toBe("BAAI/bge-large-en-v1.5");
+  });
+});
+
+/* ---------------- Embeddings client (embedTexts) ---------------- */
+
+function geminiEmbedResponse(vectors: number[][], status = 200): Response {
+  return new Response(JSON.stringify({ embeddings: vectors.map((values) => ({ values })) }), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function compatibleEmbedResponse(vectors: number[][], status = 200): Response {
+  return new Response(
+    JSON.stringify({
+      data: vectors.map((embedding, index) => ({ index, embedding })),
+    }),
+    { status, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+describe("embedTexts — Gemini transport", () => {
+  it("posts a batchEmbedContents request with task type and 768 dims, and normalises", async () => {
+    const { calls } = stubFetch(() =>
+      geminiEmbedResponse([
+        [3, 4],
+        [0, 2],
+      ]),
+    );
+    const vectors = await embedTexts(
+      { enabled: true, apiKey: API_KEY },
+      ["first note", "second note"],
+      "document",
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents",
+    );
+    expect((calls[0]!.init.headers as Record<string, string>)["x-goog-api-key"]).toBe(API_KEY);
+    const body = JSON.parse(String(calls[0]!.init.body)) as {
+      requests: Array<{
+        model: string;
+        content: { parts: Array<{ text: string }> };
+        taskType: string;
+        outputDimensionality: number;
+      }>;
+    };
+    expect(body.requests).toHaveLength(2);
+    expect(body.requests[0]).toEqual({
+      model: "models/gemini-embedding-001",
+      content: { parts: [{ text: "first note" }] },
+      taskType: "RETRIEVAL_DOCUMENT",
+      outputDimensionality: 768,
+    });
+    expect(vectors[0]).toBeInstanceOf(Float32Array);
+    expect(vectors[0]![0]).toBeCloseTo(0.6);
+    expect(vectors[0]![1]).toBeCloseTo(0.8);
+    expect(vectors[1]![0]).toBeCloseTo(0);
+    expect(vectors[1]![1]).toBeCloseTo(1);
+  });
+
+  it("uses RETRIEVAL_QUERY for query embeddings", async () => {
+    const { calls } = stubFetch(() => geminiEmbedResponse([[1, 0]]));
+    await embedTexts({ enabled: true, apiKey: API_KEY }, ["monsoon"], "query");
+    const body = JSON.parse(String(calls[0]!.init.body)) as {
+      requests: Array<{ taskType: string }>;
+    };
+    expect(body.requests[0]!.taskType).toBe("RETRIEVAL_QUERY");
+  });
+
+  it("rejects malformed vectors and wrong counts as bad-response", async () => {
+    stubFetch(() => geminiEmbedResponse([[1, 0]]));
+    await expect(
+      embedTexts({ enabled: true, apiKey: API_KEY }, ["a", "b"], "document"),
+    ).rejects.toMatchObject({ kind: "bad-response" });
+
+    stubFetch(
+      () =>
+        new Response(JSON.stringify({ embeddings: [{ values: [1, "nope"] }] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    await expect(
+      embedTexts({ enabled: true, apiKey: API_KEY }, ["a"], "document"),
+    ).rejects.toMatchObject({ kind: "bad-response" });
+
+    stubFetch(() => geminiEmbedResponse([[0, 0]]));
+    await expect(
+      embedTexts({ enabled: true, apiKey: API_KEY }, ["a"], "document"),
+    ).rejects.toMatchObject({ kind: "bad-response" });
+  });
+
+  it("maps a 401 to invalid-key", async () => {
+    stubFetch(() => statusResponse(401));
+    await expect(
+      embedTexts({ enabled: true, apiKey: API_KEY }, ["a"], "document"),
+    ).rejects.toMatchObject({ kind: "invalid-key" });
+  });
+});
+
+describe("embedTexts — OpenAI-compatible transport", () => {
+  const openAiSettings = {
+    enabled: true,
+    apiKey: API_KEY,
+    provider: "openai-compatible" as const,
+    baseUrl: "https://api.openai.com/v1",
+    model: "gpt-4o-mini",
+  };
+
+  it("posts {model, input} to /embeddings with the preset default model", async () => {
+    const { calls } = stubFetch(() =>
+      compatibleEmbedResponse([
+        [1, 0],
+        [0, 1],
+      ]),
+    );
+    const vectors = await embedTexts(openAiSettings, ["a", "b"], "document");
+    expect(calls[0]!.url).toBe("https://api.openai.com/v1/embeddings");
+    expect((calls[0]!.init.headers as Record<string, string>)["Authorization"]).toBe(
+      `Bearer ${API_KEY}`,
+    );
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+      model: "text-embedding-3-small",
+      input: ["a", "b"],
+    });
+    expect(vectors).toHaveLength(2);
+  });
+
+  it("honours the response's index order and the OpenRouter identification headers", async () => {
+    const { calls } = stubFetch(
+      () =>
+        new Response(
+          JSON.stringify({
+            data: [
+              { index: 1, embedding: [0, 1] },
+              { index: 0, embedding: [1, 0] },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    const vectors = await embedTexts(
+      {
+        enabled: true,
+        apiKey: API_KEY,
+        provider: "openai-compatible",
+        baseUrl: OPENROUTER_BASE_URL,
+        model: "openai/gpt-4o-mini",
+      },
+      ["a", "b"],
+      "query",
+    );
+    expect(vectors[0]![0]).toBeCloseTo(1);
+    expect(vectors[1]![1]).toBeCloseTo(1);
+    const headers = calls[0]!.init.headers as Record<string, string>;
+    expect(headers["X-Title"]).toBe("Noma");
+    expect(JSON.parse(String(calls[0]!.init.body)).model).toBe("openai/text-embedding-3-small");
+  });
+
+  it("maps a 429 to rate-limited and rejects a short data array", async () => {
+    stubFetch(() => statusResponse(429));
+    await expect(embedTexts(openAiSettings, ["a"], "document")).rejects.toMatchObject({
+      kind: "rate-limited",
+    });
+
+    stubFetch(() => compatibleEmbedResponse([[1, 0]]));
+    await expect(embedTexts(openAiSettings, ["a", "b"], "document")).rejects.toMatchObject({
+      kind: "bad-response",
+    });
+  });
+
+  it("refuses a no-embeddings provider without any fetch", async () => {
+    const { calls } = stubFetch(() => compatibleEmbedResponse([[1, 0]]));
+    await expect(
+      embedTexts(
+        {
+          enabled: true,
+          apiKey: API_KEY,
+          provider: "openai-compatible",
+          baseUrl: "https://api.groq.com/openai/v1",
+          model: "llama-3.3-70b-versatile",
+        },
+        ["a"],
+        "document",
+      ),
+    ).rejects.toMatchObject({ kind: "bad-response" });
+    expect(calls).toHaveLength(0);
   });
 });
