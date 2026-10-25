@@ -449,13 +449,21 @@
  * Insets are 0 in browsers without a cutout, so PWA/desktop rendering
  * is unchanged. One mechanism, used only on edge-owning shells — never
  * sprinkled on inner components.
+ *
+ * Top/bottom also take the native shell's real system-bar heights
+ * (--noma-inset-*, forwarded by MainActivity and kept on <html> by
+ * system-bars.ts): inside the Android WebView env() reports only the
+ * cutout inset, not the status-bar height, so env() alone let the
+ * header slide underneath the status bar. max() keeps whichever
+ * source is larger; on web the vars are never set and env() rules
+ * alone, exactly as before.
  */
 @utility pt-safe {
-  padding-top: env(safe-area-inset-top, 0px);
+  padding-top: max(env(safe-area-inset-top, 0px), var(--noma-inset-top, 0px));
 }
 
 @utility pb-safe {
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), var(--noma-inset-bottom, 0px));
 }
 
 @utility pl-safe {

@@ -13,6 +13,7 @@ import android.webkit.WebView;
 import java.util.Locale;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
+import androidx.core.graphics.Insets;
 import androidx.core.splashscreen.SplashScreen;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
@@ -119,6 +120,37 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    /**
+     * Native system-bar insets (status-bar overlap fix): PR #71 made
+     * the window permanently edge-to-edge and left the web layer to
+     * keep content out of the bar zones via CSS env(safe-area-inset-*)
+     * — but inside the WebView env() reports only the display-cutout
+     * inset, not the status-bar height, so on a device whose cutout
+     * inset is zero the app header slid underneath the status bar.
+     * Native apps pad by the real WindowInsets instead. This bridge
+     * is the same seam as the IME one above: the insets listener
+     * forwards the real system-bar heights in CSS px as a
+     * noma:system-insets event, and these getters cover values
+     * dispatched before the web listener registered (the shell
+     * dispatches from onCreate, long before the bundle boots).
+     * Volatile ints, only ever read from JS — thread-safe without a
+     * UI-thread marshal, exactly like the IME value.
+     */
+    private volatile int lastSystemBarTopCssPx;
+    private volatile int lastSystemBarBottomCssPx;
+
+    public class NomaSystemInsetsBridge {
+        @JavascriptInterface
+        public int getTopCssPx() {
+            return lastSystemBarTopCssPx;
+        }
+
+        @JavascriptInterface
+        public int getBottomCssPx() {
+            return lastSystemBarBottomCssPx;
+        }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(GoogleDriveAuthPlugin.class);
@@ -204,6 +236,11 @@ public class MainActivity extends BridgeActivity {
             // unit the web layer lays out in — and events fire only
             // on change, so a steady keyboard never spams JS.
             webView.addJavascriptInterface(new NomaImeBridge(), "NomaIme");
+            // System-bar insets (status-bar overlap fix): same
+            // registration point and reasoning as the IME bridge
+            // above — the listener below reads them from the same
+            // dispatch and forwards them the same way.
+            webView.addJavascriptInterface(new NomaSystemInsetsBridge(), "NomaSystemInsets");
             ViewCompat.setOnApplyWindowInsetsListener(webView, (v, insets) -> {
                 int imeBottomPx = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
                 float density = getResources().getDisplayMetrics().density;
@@ -212,6 +249,23 @@ public class MainActivity extends BridgeActivity {
                     lastImeHeightCssPx = cssPx;
                     webView.evaluateJavascript(
                             "window.dispatchEvent(new CustomEvent('noma:ime-height',{detail:" + cssPx + "}))",
+                            null);
+                }
+                // The real system-bar heights through the same seam:
+                // top is the status bar, bottom the navigation bar.
+                // getInsets() respects visibility, so while the splash
+                // sequence holds the bars hidden these read 0 — and
+                // the show at splash dismissal re-dispatches with the
+                // true values, which the change check forwards.
+                Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+                int topCssPx = density > 0 ? Math.round(systemBars.top / density) : 0;
+                int bottomCssPx = density > 0 ? Math.round(systemBars.bottom / density) : 0;
+                if (topCssPx != lastSystemBarTopCssPx || bottomCssPx != lastSystemBarBottomCssPx) {
+                    lastSystemBarTopCssPx = topCssPx;
+                    lastSystemBarBottomCssPx = bottomCssPx;
+                    webView.evaluateJavascript(
+                            "window.dispatchEvent(new CustomEvent('noma:system-insets',{detail:{top:"
+                                    + topCssPx + ",bottom:" + bottomCssPx + "}}))",
                             null);
                 }
                 return insets;

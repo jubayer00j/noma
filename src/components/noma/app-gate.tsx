@@ -6,7 +6,7 @@ import { Welcome } from "./welcome";
 import { useSettings } from "@/hooks/use-noma";
 import { useAuth } from "@/lib/noma/auth";
 import { applyTheme } from "@/lib/noma/theme";
-import { syncSystemBarsToTheme } from "@/lib/noma/system-bars";
+import { initSystemInsetsListener, syncSystemBarsToTheme } from "@/lib/noma/system-bars";
 import { syncDynamicColor } from "@/lib/noma/dynamic-color";
 import { setHapticsEnabled } from "@/lib/noma/haptics";
 import { signalSplashReady } from "@/lib/noma/splash-handoff";
@@ -101,6 +101,16 @@ export function AppGate({ children }: { children: ReactNode }) {
   // other's URLs. Native-only and register-once inside the module.
   useEffect(() => {
     initNoteLinkListener();
+  }, []);
+
+  // System-bar insets (status-bar overlap fix): register the one
+  // app-shell listener that mirrors the native shell's real status /
+  // navigation bar heights into the CSS vars the *-safe utilities pad
+  // by — inside the WebView, env(safe-area-inset-*) alone misses the
+  // status-bar height and the header slid underneath it. Native-only
+  // and register-once inside the module.
+  useEffect(() => {
+    initSystemInsetsListener();
   }, []);
 
   if (auth.configured && auth.loading) {

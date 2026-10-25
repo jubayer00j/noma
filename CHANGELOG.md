@@ -2,6 +2,15 @@
 
 All notable changes to Noma. Dates are merge dates on `main`.
 
+## 2026-10-25
+
+### App header no longer slides under the status bar — PR #91
+
+- Bug fix, found on device: Noma's top bar — title, search, the new-note button — slid underneath the Android status bar, overlapping the clock and status icons. Native apps like Facebook are also edge-to-edge yet start their content cleanly below the bar.
+- Root cause: edge-to-edge (PR #71) pads the shells with CSS `env(safe-area-inset-top)`, but inside the Android WebView that value reports only the display-cutout inset, not the status-bar height — on this device it resolved to 0, so the padding vanished. Native apps never see the problem because Android hands them the real `WindowInsets`.
+- `MainActivity`'s insets listener — the one that already forwards the IME height (PR #83) — now also forwards the real system-bar insets in CSS px as a `noma:system-insets` window event (deduped on change), with a `window.NomaSystemInsets` getter covering values dispatched before the web layer boots. The listener still only observes and returns the insets unchanged, and the splash sequence is untouched. The web layer keeps the values as `--noma-inset-top` / `--noma-inset-bottom` on `<html>`, and `pt-safe` / `pb-safe` now pad by the larger of the env() inset and the native value — on web and PWA the vars are never set, so rendering there is exactly as before.
+- Device-only proof: in the installed app, the All Notes and note headers sit fully below the status bar with no overlap, in light and dark themes; rotating the phone and opening the keyboard keep them clear; the web build is unchanged.
+
 ## v1.1.0 — 2026-10-24
 
 The first feature release since 1.0.1, distilled from the 2026-10-22 → 2026-10-24 programme (PRs #56–#88, detailed in the dated entries below) — and the first release to pass the full device-acceptance checklist (95 rows, all positive) before shipping.
