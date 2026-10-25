@@ -11,8 +11,11 @@ import {
   embeddedTextForNote,
   fnv1a,
   getIndexStatus,
+  invalidateMismatchedVectors,
+  invalidateNoteVector,
   maintainSemanticIndexForNote,
   mergeSemanticResults,
+  providerKeyFor,
   reconcileIndex,
   removeIndex,
   semanticScores,
@@ -256,7 +259,7 @@ describe("semantic index lifecycle", () => {
 
     const rows = await db.noteEmbeddings.toArray();
     expect(rows.map((r) => r.noteId).sort()).toEqual(["cats", "rain"]);
-    expect(rows[0]!.providerKey).toBe("gemini:gemini-embedding-001:2");
+    expect(rows[0]!.providerKey).toBe("gemini|native|gemini-embedding-001|2");
     expect(rows[0]!.dims).toBe(2);
     expect(rows[0]!.contentHash).toBe(fnv1a(embeddedTextForNote(baseNote({ id: "rain" }))));
 
@@ -370,6 +373,93 @@ describe("semantic index lifecycle", () => {
   });
 });
 
+/* ---------------- Index identity: the endpoint is part of the key ---------------- */
+
+function stubCompatibleEmbedFetch(): { calls: Array<{ url: string; body: string }> } {
+  const calls: Array<{ url: string; body: string }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: unknown, init?: RequestInit) => {
+      const body = String(init?.body ?? "");
+      calls.push({ url: String(url), body });
+      const parsed = JSON.parse(body) as { input: string[] };
+      return new Response(
+        JSON.stringify({
+          data: parsed.input.map((text, index) => ({ index, embedding: fakeVector(text) })),
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }),
+  );
+  return { calls };
+}
+
+function customTarget(baseUrl: string): AiEmbeddingTarget {
+  saveAiRecord(OWNER, {
+    enabled: true,
+    activePreset: "custom",
+    providers: { custom: { apiKey: API_KEY, baseUrl, embeddingModel: "embed-x" } },
+  });
+  const target = getAiEmbeddingTarget(OWNER);
+  if (!target) throw new Error("expected a custom embedding target");
+  return target;
+}
+
+describe("providerKey identity", () => {
+  it("keys Gemini's native API with the constant native segment", () => {
+    const target: AiEmbeddingTarget = {
+      settings: { enabled: true, apiKey: API_KEY, provider: "gemini" },
+      presetId: "gemini",
+      embeddingModel: "gemini-embedding-001",
+      mode: "native",
+    };
+    expect(providerKeyFor(target, 768)).toBe("gemini|native|gemini-embedding-001|768");
+  });
+
+  it("distinguishes two custom endpoints that share a model name", () => {
+    const literal = (baseUrl: string): AiEmbeddingTarget => ({
+      settings: { enabled: true, apiKey: API_KEY, provider: "openai-compatible", baseUrl },
+      presetId: "custom",
+      embeddingModel: "embed-x",
+      mode: "compatible",
+    });
+    const a = providerKeyFor(literal("https://embed-a.example/v1"), 2);
+    const b = providerKeyFor(literal("https://embed-b.example/v1"), 2);
+    expect(a).toBe("custom|https://embed-a.example/v1|embed-x|2");
+    expect(b).toBe("custom|https://embed-b.example/v1|embed-x|2");
+    expect(a).not.toBe(b);
+    // The same endpoint modulo a trailing slash is the SAME space.
+    expect(providerKeyFor(literal("https://embed-a.example/v1/"), 2)).toBe(a);
+  });
+
+  it("changing only the custom endpoint invalidates the index; the model still parses out of the URL-bearing key", async () => {
+    const { calls } = stubCompatibleEmbedFetch();
+    const db = new FakeDb();
+    await db.notes.put(baseNote({ id: "rain" }));
+
+    const targetA = customTarget("https://embed-a.example/v1");
+    await buildIndex(asDb(db), targetA);
+    const rows = await db.noteEmbeddings.toArray();
+    expect(rows[0]!.providerKey).toBe("custom|https://embed-a.example/v1|embed-x|2");
+    const ready = await getIndexStatus(asDb(db), targetA);
+    expect(ready.state).toBe("ready");
+    expect(ready.embeddingModel).toBe("embed-x");
+
+    // Same provider slot, same model name, different server: the old
+    // vectors belong to a different embedding space and must read as
+    // invalid — never silently compared against new-endpoint queries.
+    const targetB = customTarget("https://embed-b.example/v1");
+    const status = await getIndexStatus(asDb(db), targetB);
+    expect(status.state).toBe("invalid-provider");
+    expect(status.embeddingModel).toBe("embed-x");
+
+    // And no scores are produced against the stale space (no call made).
+    const callsBefore = calls.length;
+    expect((await semanticScores(asDb(db), "monsoon", targetB)).size).toBe(0);
+    expect(calls).toHaveLength(callsBefore);
+  });
+});
+
 /* ---------------- Save-time maintenance ---------------- */
 
 describe("embedNoteIfIndexed / maintainSemanticIndexForNote", () => {
@@ -430,6 +520,93 @@ describe("embedNoteIfIndexed / maintainSemanticIndexForNote", () => {
     await alien.noteEmbeddings.bulkPut(await db.noteEmbeddings.toArray());
     await maintainSemanticIndexForNote(asDb(alien), "rain");
     expect((await alien.noteEmbeddings.get("rain"))?.contentHash).toBe(row!.contentHash);
+  });
+
+  it("drops a locked or deleted note's vector even when no AI target resolves", async () => {
+    stubEmbedFetch();
+    const db = new FakeDb();
+    const target = geminiTarget();
+    await db.notes.put(baseNote({ id: "rain" }));
+    await buildIndex(asDb(db), target);
+    expect(await db.noteEmbeddings.count()).toBe(1);
+
+    // The note is locked behind the save hook's back AND the AI record
+    // is removed: the plaintext-derived vector is still dropped —
+    // locally, with no target and no provider call.
+    await db.notes.put(baseNote({ id: "rain", lock: FAKE_LOCK }));
+    saveAiRecord(OWNER, null);
+    await maintainSemanticIndexForNote(asDb(db), "rain");
+    expect(await db.noteEmbeddings.get("rain")).toBeUndefined();
+
+    // Same for a note deleted outright.
+    await db.noteEmbeddings.put({
+      noteId: "rain",
+      providerKey: providerKeyFor(target, 2),
+      dims: 2,
+      vector: new Float32Array([1, 0]),
+      contentHash: "abc123",
+      updatedAt: 1,
+    });
+    db.notes.rows.delete("rain");
+    await maintainSemanticIndexForNote(asDb(db), "rain");
+    expect(await db.noteEmbeddings.get("rain")).toBeUndefined();
+  });
+});
+
+/* ---------------- Invalidation helpers (direct-write paths) ---------------- */
+
+describe("invalidateNoteVector / invalidateMismatchedVectors", () => {
+  it("keeps a truthful row and deletes changed, ineligible and orphaned ones — with no provider call", async () => {
+    const fetchSpy = vi.fn(async () => {
+      throw new Error("invalidation must never call the provider");
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const db = new FakeDb();
+    const target = geminiTarget();
+    const key = providerKeyFor(target, 2);
+    const rowFor = (note: Note, hashOf: Note = note): NoteEmbedding => ({
+      noteId: note.id,
+      providerKey: key,
+      dims: 2,
+      vector: new Float32Array([1, 0]),
+      contentHash: fnv1a(embeddedTextForNote(hashOf)),
+      updatedAt: 1,
+    });
+
+    const keep = baseNote({ id: "keep" });
+    const changedBefore = baseNote({ id: "changed", content: "<p>Old text.</p>" });
+    const changedAfter = baseNote({ id: "changed", content: "<p>New text.</p>" });
+    const locked = baseNote({ id: "locked", lock: FAKE_LOCK });
+    await db.notes.put(keep);
+    await db.notes.put(changedAfter);
+    await db.notes.put(locked);
+    await db.noteEmbeddings.put(rowFor(keep));
+    await db.noteEmbeddings.put(rowFor(changedBefore));
+    await db.noteEmbeddings.put(rowFor(locked));
+    await db.noteEmbeddings.put(rowFor(baseNote({ id: "ghost" })));
+
+    await invalidateMismatchedVectors(asDb(db), ["keep", "changed", "locked", "ghost"]);
+
+    expect(await db.noteEmbeddings.get("keep")).toBeDefined();
+    expect(await db.noteEmbeddings.get("changed")).toBeUndefined();
+    expect(await db.noteEmbeddings.get("locked")).toBeUndefined();
+    expect(await db.noteEmbeddings.get("ghost")).toBeUndefined();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("invalidateNoteVector deletes a single row and tolerates a missing one", async () => {
+    const db = new FakeDb();
+    await db.noteEmbeddings.put({
+      noteId: "n1",
+      providerKey: "gemini|native|gemini-embedding-001|2",
+      dims: 2,
+      vector: new Float32Array([1, 0]),
+      contentHash: "abc123",
+      updatedAt: 1,
+    });
+    await invalidateNoteVector(asDb(db), "n1");
+    expect(await db.noteEmbeddings.get("n1")).toBeUndefined();
+    await expect(invalidateNoteVector(asDb(db), "n1")).resolves.toBeUndefined();
   });
 });
 

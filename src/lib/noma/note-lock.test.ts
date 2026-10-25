@@ -16,7 +16,7 @@ import {
 } from "./note-lock-crypto";
 import { notePreview } from "./notes";
 import { searchNotes } from "./search";
-import type { AttachmentMeta, Note } from "./types";
+import type { AttachmentMeta, Note, NoteEmbedding } from "./types";
 
 /* ---------------- Minimal in-memory stand-ins for the Dexie tables ---------------- */
 
@@ -47,10 +47,37 @@ class FakeTable<T extends { id: string }> {
   }
 }
 
+/** Stand-in for the v5 noteEmbeddings table (keyed by noteId, not id). */
+class FakeEmbeddingTable {
+  rows = new Map<string, NoteEmbedding>();
+  async get(noteId: string): Promise<NoteEmbedding | undefined> {
+    return this.rows.get(noteId);
+  }
+  async put(row: NoteEmbedding): Promise<string> {
+    this.rows.set(row.noteId, row);
+    return row.noteId;
+  }
+  async delete(noteId: string): Promise<void> {
+    this.rows.delete(noteId);
+  }
+  async toArray(): Promise<NoteEmbedding[]> {
+    return [...this.rows.values()];
+  }
+  async count(): Promise<number> {
+    return this.rows.size;
+  }
+}
+
 function makeDb() {
   const notes = new FakeTable<Note>();
   const attachments = new FakeTable<AttachmentMeta>();
-  return { notes, attachments, db: { notes, attachments } as unknown as NomaDatabase };
+  const noteEmbeddings = new FakeEmbeddingTable();
+  return {
+    notes,
+    attachments,
+    noteEmbeddings,
+    db: { notes, attachments, noteEmbeddings } as unknown as NomaDatabase,
+  };
 }
 
 function makeNote(patch: Partial<Note> = {}): Note {
@@ -196,5 +223,51 @@ describe("note lock lifecycle", () => {
     const res = await verifyNoteCredential(db, locked, "pin", "123456");
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toContain("isn't set up");
+  });
+});
+
+/* ---------------- Semantic vector maintenance (#8.5) ----------------
+ * Locking writes db.notes directly, bypassing updateNote's save hook,
+ * so note-lock itself owns the semantic invariant: a locked note never
+ * keeps a plaintext-derived vector at rest. */
+
+describe("note-lock semantic vectors", () => {
+  const VECTOR_ROW: NoteEmbedding = {
+    noteId: "note-1",
+    providerKey: "gemini|native|gemini-embedding-001|2",
+    dims: 2,
+    vector: new Float32Array([1, 0]),
+    contentHash: "abc123",
+    updatedAt: 1,
+  };
+
+  it("lockNote deletes the note's stored vector — nothing plaintext-derived survives the seal", async () => {
+    const { db, notes, attachments, noteEmbeddings } = makeDb();
+    await notes.put(makeNote());
+    await attachments.put(ATTACHMENT);
+    await noteEmbeddings.put(VECTOR_ROW);
+    expect(await noteEmbeddings.count()).toBe(1);
+
+    const locked = await lockNote(db, "note-1", "pin", "135790");
+    expect(locked.lock).not.toBeNull();
+    expect(isEncryptedContent(locked.content)).toBe(true);
+    expect(await noteEmbeddings.get("note-1")).toBeUndefined();
+  });
+
+  it("removeNoteLock leaves no stale vector behind", async () => {
+    const { db, notes, noteEmbeddings } = makeDb();
+    await notes.put(makeNote());
+    await noteEmbeddings.put(VECTOR_ROW);
+    const locked = await lockNote(db, "note-1", "pin", "135790");
+    expect(await noteEmbeddings.count()).toBe(0);
+
+    const right = await verifyNoteCredential(db, locked, "pin", "135790");
+    if (!right.ok) throw new Error("expected the PIN to verify");
+    await removeNoteLock(db, "note-1", right.nek);
+    // This fake db carries no account name, so maintenance cannot
+    // re-embed here — the guarantee under test is that nothing stale
+    // survives: the row deleted at lock time stays gone.
+    expect(await noteEmbeddings.get("note-1")).toBeUndefined();
+    expect((await notes.get("note-1"))?.lock).toBeNull();
   });
 });

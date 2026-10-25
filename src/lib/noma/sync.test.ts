@@ -8,6 +8,7 @@ import {
   type BackupPayload,
 } from "./backup";
 import { type NomaDatabase } from "./db";
+import { embeddedTextForNote, fnv1a } from "./semantic";
 import {
   computeSyncHashes,
   entityContentHash,
@@ -24,6 +25,7 @@ import type {
   AttachmentMeta,
   Folder,
   Note,
+  NoteEmbedding,
   NoteLock,
   Reminder,
   SyncState,
@@ -98,6 +100,37 @@ class FakeTable<T extends Row> {
   }
 }
 
+/** Stand-in for the v5 noteEmbeddings table (keyed by noteId, not id). */
+class FakeEmbeddingTable {
+  rows = new Map<string, NoteEmbedding>();
+  async get(noteId: string): Promise<NoteEmbedding | undefined> {
+    const row = this.rows.get(noteId);
+    return row ? structuredClone(row) : undefined;
+  }
+  async put(row: NoteEmbedding): Promise<string> {
+    this.rows.set(row.noteId, structuredClone(row));
+    return row.noteId;
+  }
+  async bulkPut(rows: NoteEmbedding[]): Promise<void> {
+    for (const row of rows) this.rows.set(row.noteId, structuredClone(row));
+  }
+  async delete(noteId: string): Promise<void> {
+    this.rows.delete(noteId);
+  }
+  async bulkDelete(ids: string[]): Promise<void> {
+    for (const id of ids) this.rows.delete(id);
+  }
+  async clear(): Promise<void> {
+    this.rows.clear();
+  }
+  async count(): Promise<number> {
+    return this.rows.size;
+  }
+  async toArray(): Promise<NoteEmbedding[]> {
+    return [...this.rows.values()].map((row) => structuredClone(row));
+  }
+}
+
 class FakeDb {
   name = "noma_test";
   notes = new FakeTable<Note>();
@@ -109,6 +142,7 @@ class FakeDb {
   backups = new FakeTable<Row & { createdAt: number }>();
   tombstones = new FakeTable<SyncTombstone>();
   syncMeta = new FakeTable<SyncState>();
+  noteEmbeddings = new FakeEmbeddingTable();
 
   async transaction(...args: unknown[]): Promise<void> {
     const fn = args[args.length - 1] as () => Promise<void>;
@@ -444,6 +478,96 @@ describe("three-way merge", () => {
     const planned = plan.payload.reminders.find((r) => r.id === "r1");
     expect(planned?.alertType).toBe("notification");
     expect(planned?.alarmToneMode).toBeUndefined();
+  });
+});
+
+/* ---------------- applyBackup — semantic vector invalidation (#8.5) ----------------
+ * Backup restores and sync merges write notes in bulk, bypassing
+ * updateNote's save hook: any stored vector that stops telling the
+ * truth (content replaced, note locked or gone) is dropped locally —
+ * nothing is re-embedded during a restore/merge. */
+
+describe("applyBackup — semantic vectors", () => {
+  let db: FakeDb;
+  beforeEach(() => {
+    db = new FakeDb();
+  });
+
+  function vectorRowFor(note: Note): NoteEmbedding {
+    return {
+      noteId: note.id,
+      providerKey: "gemini|native|gemini-embedding-001|2",
+      dims: 2,
+      vector: new Float32Array([1, 0]),
+      contentHash: fnv1a(embeddedTextForNote(note)),
+      updatedAt: T0,
+    };
+  }
+
+  it("merge keeps a vector whose note is unchanged and drops one whose content was replaced", async () => {
+    const keep = makeNote("keep");
+    const changedLocal = makeNote("changed");
+    await db.notes.put(keep);
+    await db.notes.put(changedLocal);
+    await db.noteEmbeddings.put(vectorRowFor(keep));
+    await db.noteEmbeddings.put(vectorRowFor(changedLocal));
+
+    const payload = makePayload({
+      notes: [
+        { ...keep, updatedAt: T0 + 2_000 },
+        { ...changedLocal, content: "<p>remote rewrite</p>", updatedAt: T0 + 2_000 },
+      ],
+    });
+    await applyBackup(asDb(db), payload, "merge");
+
+    expect((await db.notes.get("changed"))?.content).toBe("<p>remote rewrite</p>");
+    expect(await db.noteEmbeddings.get("keep")).toBeDefined();
+    expect(await db.noteEmbeddings.get("changed")).toBeUndefined();
+  });
+
+  it("a note tombstone (permanent delete via merge) removes the vector row too", async () => {
+    const note = makeNote("n1");
+    await db.notes.put(note);
+    await db.noteEmbeddings.put(vectorRowFor(note));
+
+    const payload = makePayload({
+      tombstones: [{ entity: "note", id: "n1", deletedAt: T0 + 2_000, deviceId: "device-b" }],
+    });
+    const counts = await applyBackup(asDb(db), payload, "merge");
+
+    expect(counts.deleted).toBeGreaterThan(0);
+    expect(await db.notes.get("n1")).toBeUndefined();
+    expect(await db.noteEmbeddings.get("n1")).toBeUndefined();
+  });
+
+  it("replace restore drops vectors for vanished notes and for notes that arrive locked", async () => {
+    const staying = makeNote("staying");
+    const vanishing = makeNote("vanishing");
+    const locking = makeNote("locking");
+    await db.notes.put(staying);
+    await db.notes.put(vanishing);
+    await db.notes.put(locking);
+    await db.noteEmbeddings.put(vectorRowFor(staying));
+    await db.noteEmbeddings.put(vectorRowFor(vanishing));
+    await db.noteEmbeddings.put(vectorRowFor(locking));
+
+    const lockedCopy: Note = {
+      ...locking,
+      lock: {
+        v: 1,
+        slots: {},
+        biometric: false,
+        failedAttempts: 0,
+        lockoutUntil: null,
+        lockedAt: T0,
+      },
+      updatedAt: T0 + 2_000,
+    };
+    await applyBackup(asDb(db), makePayload({ notes: [staying, lockedCopy] }), "replace");
+
+    expect(await db.noteEmbeddings.get("staying")).toBeDefined();
+    expect(await db.noteEmbeddings.get("vanishing")).toBeUndefined();
+    expect(await db.noteEmbeddings.get("locking")).toBeUndefined();
   });
 });
 

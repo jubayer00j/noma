@@ -3,6 +3,7 @@ import type { NomaDatabase } from "./db";
 import { createFolder, createNote, createTag } from "./notes";
 import { saveImageAttachment } from "./media";
 import { countWords, sanitizeHtml } from "./sanitize";
+import { invalidateMismatchedVectors } from "./semantic";
 
 /**
  * Importers (roadmap #7): bring notes in from Google Keep (Takeout ZIP)
@@ -1256,6 +1257,7 @@ export async function importNotes(
 
   const total = imported.length;
   let done = 0;
+  const writtenIds: string[] = [];
   for (const item of imported) {
     try {
       const key = dedupeKey(item.title, item.createdAt);
@@ -1305,6 +1307,7 @@ export async function importNotes(
           content: sanitised,
           wordCount: countWords(sanitised),
         });
+        writtenIds.push(note.id);
         seen.add(key);
         report.imported += 1;
       }
@@ -1315,5 +1318,10 @@ export async function importNotes(
     done += 1;
     onProgress?.(done, total);
   }
+  // The content writes above are direct db.notes.update calls that
+  // bypass updateNote's semantic save hook: drop any stored vector
+  // that no longer matches the written content. Local-only
+  // invalidation (semantic.ts) — nothing is embedded during an import.
+  if (writtenIds.length) await invalidateMismatchedVectors(db, writtenIds);
   return report;
 }

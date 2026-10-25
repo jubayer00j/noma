@@ -2,6 +2,7 @@ import {
   AiError,
   embedTexts,
   getAiEmbeddingTarget,
+  normalizeBaseUrl,
   noteEligibleForAi,
   type AiEmbeddingTarget,
 } from "./ai";
@@ -27,9 +28,9 @@ import type { Note, NoteEmbedding } from "./types";
  *   notes are NEVER embedded and never surfaced semantically.
  * - Vectors are derived data: local-only, never in backups, never
  *   synced (the table is excluded from collectBackup by construction
- *   and from copyDatabase by its explicit table list). A provider or
- *   embedding-model change invalidates the index — vectors from two
- *   embedding spaces are never mixed or compared.
+ *   and from copyDatabase by its explicit table list). A provider,
+ *   endpoint or embedding-model change invalidates the index — vectors
+ *   from two embedding spaces are never mixed or compared.
  *
  * Any failure in this layer (offline, quota, bad key) degrades search
  * to keyword-only; searchNotes itself is untouched.
@@ -60,12 +61,29 @@ export function embeddedTextForNote(note: Pick<Note, "title" | "content">): stri
   return `${note.title}\n${htmlToPlainText(note.content)}`.slice(0, EMBED_MAX_CHARS);
 }
 
-/** The identity of the embedding space a target writes into, minus dims. */
-function identityPrefix(target: AiEmbeddingTarget): string {
-  return `${target.presetId}:${target.embeddingModel}:`;
+/**
+ * The endpoint segment of the embedding-space identity: the normalized
+ * base URL for an OpenAI-compatible target — for the Custom preset
+ * that URL is the user's own, so repointing it at another server is a
+ * different embedding space even when the model name stays the same —
+ * or the constant "native" for Gemini's native API, whose endpoint is
+ * fixed by the provider.
+ */
+function identityEndpoint(target: AiEmbeddingTarget): string {
+  return target.mode === "compatible" ? normalizeBaseUrl(target.settings.baseUrl) : "native";
 }
 
-/** "<slotId>:<embeddingModel>:<dims>" — the full providerKey stored per row. */
+/** The identity of the embedding space a target writes into, minus dims. */
+function identityPrefix(target: AiEmbeddingTarget): string {
+  return `${target.presetId}|${identityEndpoint(target)}|${target.embeddingModel}|`;
+}
+
+/**
+ * "<slotId>|<endpoint>|<embeddingModel>|<dims>" — the full providerKey
+ * stored per row. Segments are "|"-joined because the endpoint segment
+ * itself contains ":" and "/" (a URL), which the old ":"-joined format
+ * could neither hold nor parse back.
+ */
 export function providerKeyFor(target: AiEmbeddingTarget, dims: number): string {
   return `${identityPrefix(target)}${dims}`;
 }
@@ -225,10 +243,9 @@ export interface SemanticIndexStatus {
 }
 
 function modelFromProviderKey(providerKey: string): string | null {
-  const first = providerKey.indexOf(":");
-  const last = providerKey.lastIndexOf(":");
-  if (first < 0 || last <= first) return null;
-  return providerKey.slice(first + 1, last) || null;
+  const parts = providerKey.split("|");
+  if (parts.length !== 4) return null;
+  return parts[2] || null;
 }
 
 /**
@@ -270,6 +287,51 @@ export async function getIndexStatus(
     if (!desired.has(row.noteId)) stale++;
   }
   return { state: "ready", indexedCount: rows.length, staleCount: stale, embeddingModel };
+}
+
+/* ---------------- Vector invalidation (direct-write paths) ----------------
+ * Several modules write db.notes directly, bypassing updateNote's save
+ * hook: note locking/unlocking (note-lock.ts), version restores
+ * (versions.ts), permanent deletion, backup restore / sync merge
+ * (backup.ts) and imports (importers.ts). The invariant they must all
+ * preserve: a locked, template or trashed note NEVER has a vector at
+ * rest, and a vector never claims content its note doesn't currently
+ * have. The helpers here are LOCAL-ONLY — they delete rows and never
+ * call the provider; re-embedding stays inside user flows (a save, an
+ * unlock, Build/Update), so a mismatch simply reads as stale until
+ * then. */
+
+/** Deletes one note's vector row, if one exists. No provider call. */
+export async function invalidateNoteVector(db: NomaDatabase, noteId: string): Promise<void> {
+  if (!db.noteEmbeddings) return;
+  await db.noteEmbeddings.delete(noteId);
+}
+
+/**
+ * Deletes the vector rows of the given notes wherever a row no longer
+ * tells the truth: the note is gone, no longer eligible (locked,
+ * template, trashed), emptied, or its stored contentHash doesn't match
+ * the hash of the note's current embedded text. Eligible notes whose
+ * rows still match are kept untouched.
+ */
+export async function invalidateMismatchedVectors(
+  db: NomaDatabase,
+  noteIds: Iterable<string>,
+): Promise<void> {
+  if (!db.noteEmbeddings) return;
+  for (const noteId of noteIds) {
+    const row = await db.noteEmbeddings.get(noteId);
+    if (!row) continue;
+    const note = await db.notes.get(noteId);
+    if (!note || !noteEligibleForAi(note)) {
+      await db.noteEmbeddings.delete(noteId);
+      continue;
+    }
+    const text = embeddedTextForNote(note);
+    if (!text.trim() || row.contentHash !== fnv1a(text)) {
+      await db.noteEmbeddings.delete(noteId);
+    }
+  }
 }
 
 /* ---------------- Save-time maintenance ---------------- */
@@ -332,11 +394,19 @@ function ownerIdForDatabaseName(name: string | undefined): string | null | undef
 }
 
 /**
- * The notes.ts save hook, kept here so notes.ts stays thin: resolves
- * the database owner's embedding target and refreshes the saved
- * note's vector. Best-effort by design — every failure is swallowed,
- * because a save must never fail over a search index; Update index
- * repairs anything this misses. Does nothing when no index exists.
+ * The notes.ts save hook (also used by versions.ts restores and
+ * note-lock.ts unlocks), kept here so callers stay thin: refreshes one
+ * note's vector after a write. Best-effort by design — every failure
+ * is swallowed, because a save must never fail over a search index;
+ * Update index repairs anything this misses. Does nothing when no
+ * index exists.
+ *
+ * The truth enforcement runs FIRST and needs no provider target at
+ * all: a gone, ineligible (locked/template/trashed) or emptied note
+ * loses its vector locally, even when AI is off or the key was
+ * removed — a plaintext-derived vector must never outlive the state
+ * that made its note unembeddable. Only the re-embed of an eligible
+ * note waits for a resolvable target.
  */
 export async function maintainSemanticIndexForNote(
   db: NomaDatabase,
@@ -344,16 +414,16 @@ export async function maintainSemanticIndexForNote(
 ): Promise<void> {
   try {
     if (!db.noteEmbeddings) return;
-    const ownerId = ownerIdForDatabaseName(db.name);
-    if (ownerId === undefined) return;
     if ((await db.noteEmbeddings.count()) === 0) return;
-    const target = getAiEmbeddingTarget(ownerId);
-    if (!target) return;
     const note = await db.notes.get(noteId);
-    if (!note) {
+    if (!note || !noteEligibleForAi(note) || !embeddedTextForNote(note).trim()) {
       await db.noteEmbeddings.delete(noteId);
       return;
     }
+    const ownerId = ownerIdForDatabaseName(db.name);
+    if (ownerId === undefined) return;
+    const target = getAiEmbeddingTarget(ownerId);
+    if (!target) return;
     await embedNoteIfIndexed(db, note, target);
   } catch {
     /* best-effort maintenance — reconcile is the repair path */

@@ -12,6 +12,7 @@ import {
   wrapNoteKey,
 } from "./note-lock-crypto";
 import { countWords } from "./sanitize";
+import { invalidateNoteVector, maintainSemanticIndexForNote } from "./semantic";
 import { clearVersions } from "./versions";
 import type { Note, NoteLock, NoteLockMethod } from "./types";
 
@@ -110,6 +111,12 @@ export async function lockNote(
   // form — keeping it would defeat the seal. Locking purges it, and no
   // new snapshots are taken while the note stays locked (versions.ts).
   await clearVersions(db, noteId);
+
+  // The semantic-search vector is likewise derived from the plaintext:
+  // it must not survive the seal at rest. This write is direct (not
+  // updateNote), so the save hook never sees it — delete the vector
+  // here, locally, with no provider call (semantic.ts).
+  await invalidateNoteVector(db, noteId);
 
   const updated = await db.notes.get(noteId);
   if (!updated) throw new Error("Note not found after locking.");
@@ -258,6 +265,9 @@ export async function saveLockedNoteContent(
     updatedAt: Date.now(),
   });
   await encryptPlaintextAttachments(db, note.id, nek);
+  // The note stays locked and its content just changed under the seal:
+  // no vector may exist for it (see lockNote).
+  await invalidateNoteVector(db, note.id);
 }
 
 /** Permanently removes a note's lock, decrypting body and attachments back to plaintext. */
@@ -290,6 +300,11 @@ export async function removeNoteLock(
     wordCount: countWords(data.content),
     updatedAt: Date.now(),
   });
+
+  // The note is plaintext and eligible again: refresh its vector the
+  // same way the updateNote save hook does (a no-op unless a valid
+  // index already exists — the user's Settings build was the opt-in).
+  await maintainSemanticIndexForNote(db, noteId);
 }
 
 /** Adds or replaces one credential slot (used to change a note's credential). */
@@ -306,6 +321,8 @@ export async function setNoteLockSlot(
   await db.notes.update(note.id, {
     lock: { ...lock, slots: { ...lock.slots, [method]: slot } },
   });
+  // The note remains locked — guarantee no vector sits at rest for it.
+  await invalidateNoteVector(db, note.id);
 }
 
 /** Removes a credential slot. Refuses to remove the last one — a note must always keep a backup credential. */
@@ -320,6 +337,8 @@ export async function removeNoteLockSlot(
   const slots = { ...lock.slots };
   delete slots[method];
   await db.notes.update(note.id, { lock: { ...lock, slots } });
+  // The note remains locked — guarantee no vector sits at rest for it.
+  await invalidateNoteVector(db, note.id);
   return true;
 }
 

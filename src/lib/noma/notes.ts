@@ -177,14 +177,25 @@ export async function deleteNoteForever(db: NomaDatabase, id: string): Promise<v
     await cancelNotification(reminder.id, reminder.notificationId);
   }
 
-  await db.transaction("rw", db.notes, db.attachments, db.reminders, db.noteVersions, async () => {
-    await db.attachments.where("noteId").equals(id).delete();
-    await db.reminders.where("noteId").equals(id).delete();
-    // Permanent deletion purges the note's version history with it
-    // (soft-delete/trash keeps history — a restored note keeps its past).
-    await clearVersions(db, id);
-    await db.notes.delete(id);
-  });
+  await db.transaction(
+    "rw",
+    db.notes,
+    db.attachments,
+    db.reminders,
+    db.noteVersions,
+    db.noteEmbeddings,
+    async () => {
+      await db.attachments.where("noteId").equals(id).delete();
+      await db.reminders.where("noteId").equals(id).delete();
+      // Permanent deletion purges the note's version history with it
+      // (soft-delete/trash keeps history — a restored note keeps its past).
+      await clearVersions(db, id);
+      // The semantic vector is derived from the note's content and dies
+      // with it — no row may outlive the note (semantic.ts).
+      if (db.noteEmbeddings) await db.noteEmbeddings.delete(id);
+      await db.notes.delete(id);
+    },
+  );
 
   // The note tombstone cascades to its attachments and reminders on other
   // devices, so they don't need markers of their own.
