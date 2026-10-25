@@ -13,6 +13,7 @@ import {
   Plus,
   RotateCcw,
   Search,
+  Share2,
   Sparkles,
   Star,
   Trash2,
@@ -31,6 +32,7 @@ import { useStableNotes } from "./use-stable-notes";
 import type { VirtualListHandle } from "./virtual-list";
 import { NotesListSurfaceContext } from "./notes-list-surface-context";
 import { PromptDialog, type PromptRequest } from "./prompt-dialog";
+import { NoteExportDialog } from "./note-export-dialog";
 import { NoteLockDialog } from "./note-lock-dialog";
 import { NoteLockGate } from "./note-lock-gate";
 import { NoteSessionAttachmentsContext } from "./note-session-context";
@@ -131,6 +133,7 @@ interface NoteOverflowMenuProps {
   onMoveToFolder: (folderId: string | null) => void;
   onSetReminder: () => void;
   onDuplicate: () => void;
+  onShareExport: () => void;
   onAiSummarize?: (() => void) | undefined;
   onAiSuggestTags?: (() => void) | undefined;
   onVersionHistory?: () => void;
@@ -158,6 +161,7 @@ function NoteOverflowMenu({
   onMoveToFolder,
   onSetReminder,
   onDuplicate,
+  onShareExport,
   onAiSummarize,
   onAiSuggestTags,
   onVersionHistory,
@@ -243,6 +247,9 @@ function NoteOverflowMenu({
               {note.reminderAt ? "Edit Reminder" : "Set Reminder"}
             </DropdownMenuItem>
             <DropdownMenuItem onClick={onDuplicate}>Duplicate</DropdownMenuItem>
+            <DropdownMenuItem onClick={onShareExport}>
+              <Share2 className="size-4" /> Share / Export
+            </DropdownMenuItem>
             {!note.lock && onVersionHistory && (
               <DropdownMenuItem onClick={onVersionHistory}>
                 <History className="size-4" /> Version history
@@ -640,6 +647,7 @@ export function Workspace() {
   const [prompt, setPrompt] = useState<PromptRequest | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [reminderTargetNote, setReminderTargetNote] = useState<Note | null>(null);
+  const [exportTargetNote, setExportTargetNote] = useState<Note | null>(null);
   const [versionHistoryNote, setVersionHistoryNote] = useState<Note | null>(null);
   /**
    * Unlocked session for the open locked note: its key and decrypted data,
@@ -813,6 +821,24 @@ export function Workspace() {
       setEditReturnTo("read");
     },
     [activeNoteId],
+  );
+
+  /**
+   * Share / Export entry point for both note menus. A locked note is
+   * never exported from ciphertext: without a live unlocked session it
+   * routes through the unlock gate first (the duplicate flow's rule),
+   * and the export dialog only ever opens on plaintext.
+   */
+  const handleShareExport = useCallback(
+    (note: Note) => {
+      if (note.lock && noteSessionRef.current?.noteId !== note.id) {
+        toast.info("Unlock this note first — then you can share or export it.");
+        openNote(note);
+        return;
+      }
+      setExportTargetNote(note);
+    },
+    [openNote],
   );
 
   /** Enter the editor for the currently open note (from the Read View). */
@@ -1105,6 +1131,7 @@ export function Workspace() {
         if (db) void setArchived(db, note, archived);
       },
       setReminder: (note) => setReminderTargetNote(note),
+      shareExport: (note) => handleShareExport(note),
       viewHistory: (note) => setVersionHistoryNote(note),
       lockNote: (note) => setLockDialog({ note, mode: "setup" }),
       saveAsTemplate: (note) =>
@@ -1182,7 +1209,7 @@ export function Workspace() {
           },
         }),
     }),
-    [db, openNote, flushPendingSave],
+    [db, openNote, flushPendingSave, handleShareExport],
   );
 
   /**
@@ -1324,6 +1351,7 @@ export function Workspace() {
       onMoveToFolder={(folderId) => void moveNote(db!, activeNote.id, folderId)}
       onSetReminder={() => setReminderTargetNote(activeNote)}
       onDuplicate={() => actions.duplicate(activeNote)}
+      onShareExport={() => void flushPendingSave().then(() => handleShareExport(activeNote))}
       onAiSummarize={
         aiActionsAvailable(activeNote, aiSettings)
           ? () =>
@@ -1693,6 +1721,25 @@ export function Workspace() {
           }}
         />
       )}
+
+      {exportTargetNote &&
+        (() => {
+          // Freshest row, with the unlocked session's plaintext overlaid —
+          // and no dialog at all if the note is locked without a session
+          // (handleShareExport gates this too; the export must never see
+          // ciphertext, even if the session ended while the menu closed).
+          const dialogNote = allNotes.find((n) => n.id === exportTargetNote.id) ?? exportTargetNote;
+          const session = noteSession?.noteId === dialogNote.id ? noteSession : null;
+          if (dialogNote.lock && !session) return null;
+          const noteForExport = session ? { ...dialogNote, content: session.content } : dialogNote;
+          return (
+            <NoteExportDialog
+              note={noteForExport}
+              sessionAttachments={session?.attachments ?? null}
+              onClose={() => setExportTargetNote(null)}
+            />
+          );
+        })()}
 
       {versionHistoryNote && (
         <VersionHistoryDialog

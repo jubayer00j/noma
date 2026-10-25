@@ -19,6 +19,7 @@ import {
   Pin,
   PinOff,
   RotateCcw,
+  Share2,
   Star,
   Trash2,
 } from "lucide-react";
@@ -65,6 +66,8 @@ export interface NoteActions {
   setArchived: (note: Note, archived: boolean) => void;
   setReminder?: (note: Note) => void;
   duplicate: (note: Note) => void;
+  /** Opens the Share / Export dialog (locked notes route via unlock first). */
+  shareExport?: (note: Note) => void;
   /** Opens the per-note version history dialog (hidden for locked notes). */
   viewHistory?: (note: Note) => void;
   move: (note: Note, folderId: string | null) => void;
@@ -542,6 +545,11 @@ const NoteItem = memo(function NoteItem({
                   <DropdownMenuItem onClick={() => actions.duplicate(note)}>
                     <Copy className="size-4" /> Duplicate
                   </DropdownMenuItem>
+                  {actions.shareExport && (
+                    <DropdownMenuItem onClick={() => actions.shareExport?.(note)}>
+                      <Share2 className="size-4" /> Share / Export
+                    </DropdownMenuItem>
+                  )}
                   {!locked && actions.viewHistory && (
                     <DropdownMenuItem onClick={() => actions.viewHistory?.(note)}>
                       <History className="size-4" /> Version history
