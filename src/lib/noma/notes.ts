@@ -4,7 +4,8 @@ import {
   notificationSnapshotForNote,
   scheduleNotification,
 } from "./notifications";
-import { countWords, htmlToPlainText, sanitizeHtml } from "./sanitize";
+import { countWords, sanitizeHtml } from "./sanitize";
+import { notePreviewText } from "./note-export";
 import { cleanupOrphanedAttachments } from "./media";
 import { recordTombstone } from "./sync";
 import { clearVersions, snapshotIfSettled } from "./versions";
@@ -314,11 +315,16 @@ function hashNoteContent(content: string): number {
   return hash >>> 0;
 }
 
-/** The original preview computation, unchanged. */
+/**
+ * The preview computation. The text comes from note-export's
+ * structure-aware preview builder (list items keep their markers) rather
+ * than the flat htmlToPlainText extractor, which strips markers and made
+ * structured notes read as one unordered run on the cards.
+ */
 function computeNotePreview(note: Note, length: number): string {
   // Locked notes are title-only everywhere: never surface body text.
   if (note.lock) return "";
-  const text = htmlToPlainText(note.content);
+  const text = notePreviewText(note.content);
   return text.length > length ? `${text.slice(0, length)}…` : text;
 }
 

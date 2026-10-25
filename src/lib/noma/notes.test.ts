@@ -1,5 +1,7 @@
+// @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as sanitize from "./sanitize";
+import * as noteExport from "./note-export";
 import { notePreview, pruneNotePreviewCache } from "./notes";
 import type { Note } from "./types";
 
@@ -24,13 +26,13 @@ function makeNote(id: string, content: string, extra: Partial<Note> = {}): Note 
   };
 }
 
-/** The pre-cache preview computation, used as the correctness reference. */
+/** The uncached preview computation, used as the correctness reference. */
 function referencePreview(note: Note, length = 140): string {
-  const text = sanitize.htmlToPlainText(note.content);
+  const text = noteExport.notePreviewText(note.content);
   return text.length > length ? `${text.slice(0, length)}…` : text;
 }
 
-const parseSpy = vi.spyOn(sanitize, "htmlToPlainText");
+const parseSpy = vi.spyOn(noteExport, "notePreviewText");
 
 beforeEach(() => {
   // Start each test with an empty preview cache and a fresh parse count.
@@ -143,5 +145,70 @@ describe("notePreview cache", () => {
       expect(notePreview(note, length)).toBe(expected);
       expect(notePreview(note, length)).toBe(expected);
     }
+  });
+});
+
+describe("notePreview list markers", () => {
+  it("keeps the ordering for the reported Testing-note shape", () => {
+    // Three one-item ordered lists (starts 1/2/3), each followed by a
+    // bullet list of 1/2/3 — the flat preview read "Hlw 1 2 3 Hi …".
+    const bullets = "<ul><li><p>1</p></li><li><p>2</p></li><li><p>3</p></li></ul>";
+    const content =
+      '<ol start="1"><li><p>Hlw</p></li></ol>' +
+      bullets +
+      '<ol start="2"><li><p>Hi</p></li></ol>' +
+      bullets +
+      '<ol start="3"><li><p>Hey</p></li></ol>' +
+      bullets;
+    expect(notePreview(makeNote("testing", content))).toBe(
+      "1. Hlw • 1 • 2 • 3 2. Hi • 1 • 2 • 3 3. Hey • 1 • 2 • 3",
+    );
+  });
+
+  it("honours an ordered list's start and type", () => {
+    expect(
+      notePreview(
+        makeNote("start3", '<ol start="3"><li><p>third</p></li><li><p>fourth</p></li></ol>'),
+      ),
+    ).toBe("3. third 4. fourth");
+    expect(
+      notePreview(
+        makeNote("alpha", '<ol type="a"><li><p>first</p></li><li><p>second</p></li></ol>'),
+      ),
+    ).toBe("a. first b. second");
+    expect(
+      notePreview(makeNote("alpha27", '<ol type="a" start="27"><li><p>after z</p></li></ol>')),
+    ).toBe("aa. after z");
+    expect(
+      notePreview(makeNote("roman", '<ol type="i" start="4"><li><p>fourth</p></li></ol>')),
+    ).toBe("iv. fourth");
+  });
+
+  it("shows task-list checkboxes", () => {
+    const content =
+      '<ul data-type="taskList">' +
+      '<li data-checked="false"><label><input type="checkbox"></label><div><p>Todo</p></div></li>' +
+      '<li data-checked="true"><label><input type="checkbox"></label><div><p>Done</p></div></li>' +
+      "</ul>";
+    expect(notePreview(makeNote("tasks", content))).toBe("• [ ] Todo • [x] Done");
+  });
+
+  it("prefixes nested list items with their own markers", () => {
+    const content = "<ul><li><p>Parent</p><ul><li><p>Child</p></li></ul></li></ul>";
+    expect(notePreview(makeNote("nested-list", content))).toBe("• Parent • Child");
+  });
+
+  it("leaves plain-paragraph previews exactly as the flat extractor made them", () => {
+    const note = makeNote("plain", "<p>Hello <strong>world</strong></p><p>Second para</p>");
+    expect(notePreview(note)).toBe(sanitize.htmlToPlainText(note.content));
+    expect(notePreview(note)).toBe("Hello world Second para");
+  });
+
+  it("never lets markers leak into word counts", () => {
+    const content = '<ol start="1"><li><p>Hlw</p></li></ol><ul><li><p>1</p></li></ul>';
+    // The words are "Hlw" and "1"; the "1." and "•" markers are not words,
+    // and countWords still runs on the flat extractor, not the preview.
+    expect(sanitize.countWords(content)).toBe(2);
+    expect(notePreview(makeNote("wc", content))).toBe("1. Hlw • 1");
   });
 });
