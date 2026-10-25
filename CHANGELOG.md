@@ -2,6 +2,15 @@
 
 All notable changes to Noma. Dates are merge dates on `main`.
 
+## 2026-10-25
+
+### Typed numbered lists keep their numbers after save — PR #90
+
+- Bug fix, found on device: building a numbered sequence by typing "1. ", "2. ", "3. " showed the right numbers in the editor, but after saving every line restarted at 1 — in the read view, and back in the editor too, so the numbers were lost at save time, not merely drawn wrong. The same content also read as one glued word in previews ("Hlw123Hi123Hey123") and counted a whole list as "1 words".
+- Root cause was the content sanitiser: each typed line becomes its own one-item ordered list whose number lives in the list's `start` attribute, and the sanitiser's allowlist had no `OL` entry at all, so `start` — and the marker-style `type` — was stripped on every save and again at read-view render. A single list built with the toolbar button never carries `start`, which is why that flow looked fine.
+- The sanitiser now keeps a validated `start` on ordered lists (a positive integer, 1–9999; anything else drops the attribute) and a validated `type` (only 1/a/A/i/I). Plain-text extraction now treats block boundaries as word separators, so word counts, previews, search snippets and AI prompts see the words the note actually has. One honest limit: notes already saved with their starts stripped cannot get them back — the numbers were deleted at save time; editing such a list re-derives them and they stick from then on.
+- Proof: new sanitiser regression tests — a typed "3. " list round-trips with its start intact and stays stable across re-saves, a lettered type is kept and an invented one dropped, invalid starts (0, negative, non-numeric) are dropped, and list items count as separate words. Full suite green.
+
 ## v1.1.0 — 2026-10-24
 
 The first feature release since 1.0.1, distilled from the 2026-10-22 → 2026-10-24 programme (PRs #56–#88, detailed in the dated entries below) — and the first release to pass the full device-acceptance checklist (95 rows, all positive) before shipping.
