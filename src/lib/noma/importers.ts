@@ -584,16 +584,213 @@ async function renderInlineText(raw: string, images: InlineImageSink): Promise<s
 
 /* -------- Block rendering -------- */
 
+/** The marker system of an ordered list, as carried by the OL `type` attribute. */
+type OrderedListType = "1" | "a" | "A" | "i" | "I";
+
 interface ListItem {
   indent: number;
   ordered: boolean;
+  /** Marker system for ordered items; null for bullets. */
+  listType: OrderedListType | null;
+  /** Numeric value of the item's own marker (alpha/roman converted); null for bullets. */
+  value: number | null;
   task: boolean;
   checked: boolean;
   text: string;
 }
 
 const LIST_LINE = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
+const LETTERED_LINE = /^(\s*)([A-Za-z]+)[.)]\s+(.*)$/;
 const TASK_MARKER = /^\[( |x|X)\]\s+(.*)$/;
+
+const listIndent = (whitespace: string): number =>
+  Math.floor(whitespace.replace(/\t/g, "  ").length / 2);
+
+const lineIndent = (line: string): number => listIndent(line.match(/^(\s*)/)![1]!);
+
+const ROMAN_DIGITS: Record<string, number> = {
+  i: 1,
+  v: 5,
+  x: 10,
+  l: 50,
+  c: 100,
+  d: 500,
+  m: 1000,
+};
+
+/** Strict roman-numeral value of a marker (single case only), or null when it isn't one. */
+function parseRomanNumeral(marker: string): number | null {
+  if (!/^[ivxlcdm]+$/i.test(marker)) return null;
+  const lower = marker.toLowerCase();
+  if (marker !== lower && marker !== marker.toUpperCase()) return null; // mixed case
+  if (!/^m{0,3}(cm|cd|d?c{0,3})(xc|xl|l?x{0,3})(ix|iv|v?i{0,3})$/.test(lower)) return null;
+  let total = 0;
+  for (let k = 0; k < lower.length; k++) {
+    const current = ROMAN_DIGITS[lower[k]!]!;
+    const next = k + 1 < lower.length ? ROMAN_DIGITS[lower[k + 1]!]! : 0;
+    total += current < next ? -current : current;
+  }
+  return total;
+}
+
+interface LetteredCandidate {
+  indent: number;
+  text: string;
+  upper: boolean;
+  /**
+   * Spreadsheet-style alpha value of the marker (a=1 … z=26, aa=27, ab=28)
+   * when it is written in one consistent case; null for mixed-case markers.
+   */
+  alpha: number | null;
+  /** Value when the marker is a valid roman numeral. */
+  roman: number | null;
+}
+
+/**
+ * Spreadsheet-style (bijective base-26) value of a letter marker, matching
+ * the exporter's `toAlpha`: a=1 … z=26, aa=27, az=52, ba=53. Mixed-case
+ * markers belong to neither system and return null.
+ */
+function parseAlphaMarker(marker: string): number | null {
+  if (marker !== marker.toLowerCase() && marker !== marker.toUpperCase()) return null;
+  const lower = marker.toLowerCase();
+  let value = 0;
+  for (const ch of lower) value = value * 26 + (ch.charCodeAt(0) - "a".charCodeAt(0) + 1);
+  return value;
+}
+
+/**
+ * A line that LOOKS like a lettered/roman list item ("a. ", "iv) ").
+ * Such lines become list items only when sequence-confirmed (see
+ * confirmLetteredStart) — prose is full of "a. " and "i. " sentence
+ * fragments that must not turn into lists.
+ */
+function parseLetteredCandidate(line: string): LetteredCandidate | null {
+  const match = line.match(LETTERED_LINE);
+  if (!match) return null;
+  const marker = match[2]!;
+  const roman = parseRomanNumeral(marker);
+  const alpha = parseAlphaMarker(marker);
+  if (roman === null && alpha === null) return null; // mixed-case: neither system
+  return {
+    indent: listIndent(match[1]!),
+    text: match[3]!,
+    upper: marker === marker.toUpperCase(),
+    alpha,
+    roman,
+  };
+}
+
+/** The candidate's marker value read as the given list type, or null when it isn't one. */
+function letteredValue(candidate: LetteredCandidate, type: OrderedListType): number | null {
+  switch (type) {
+    case "a":
+      return candidate.upper ? null : candidate.alpha;
+    case "A":
+      return candidate.upper ? candidate.alpha : null;
+    case "i":
+      return candidate.upper ? null : candidate.roman;
+    case "I":
+      return candidate.upper ? candidate.roman : null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Sequence confirmation for a would-be lettered/roman list: the candidate
+ * at lines[idx] starts a list only when the next list-candidate line at
+ * the same indent continues the sequence (+1 in the same system and
+ * case). Roman is tried before alpha, so "i. ii. iii." reads as roman
+ * while "c. d." (100 → 500 is not +1) falls through to alpha. A lone
+ * lettered line is never confirmed — that false-positive guard is
+ * deliberate, so ordinary prose keeps its paragraphs.
+ */
+function confirmLetteredStart(
+  lines: string[],
+  idx: number,
+  candidate: LetteredCandidate,
+): OrderedListType | null {
+  const types: OrderedListType[] = [];
+  if (candidate.roman !== null) types.push(candidate.upper ? "I" : "i");
+  if (candidate.alpha !== null) types.push(candidate.upper ? "A" : "a");
+  for (let j = idx + 1; j < lines.length; j++) {
+    const raw = lines[j]!;
+    if (raw.trim() === "") return null;
+    if (LIST_LINE.test(raw)) {
+      // A bullet/numeric line: only a deeper-indented (nested) one can
+      // sit between a candidate and its successor.
+      if (lineIndent(raw) <= candidate.indent) return null;
+      continue;
+    }
+    const next = parseLetteredCandidate(raw);
+    if (next) {
+      if (next.indent < candidate.indent) return null;
+      if (next.indent > candidate.indent) continue; // nested content, keep scanning
+      for (const type of types) {
+        const first = letteredValue(candidate, type);
+        const second = letteredValue(next, type);
+        if (first !== null && second !== null && second === first + 1) return type;
+      }
+      return null;
+    }
+    // Ordinary line: wrapped item text is indented deeper than the
+    // candidate; anything at or above its indent ends the search.
+    if (lineIndent(raw) <= candidate.indent) return null;
+  }
+  return null;
+}
+
+/**
+ * Decides a lettered candidate line during list collection:
+ * - a ListItem when it continues the live lettered run at its indent,
+ *   or starts a new sequence-confirmed run;
+ * - "break" when it breaks the live run's sequence — the caller ends
+ *   the collection there and the line is re-evaluated as ordinary
+ *   content (prose, or the start of a fresh run);
+ * - null when it isn't a list item at all (the caller falls through to
+ *   the indented-continuation rules).
+ */
+function letteredItem(
+  lines: string[],
+  idx: number,
+  candidate: LetteredCandidate,
+  items: ListItem[],
+): ListItem | "break" | null {
+  let prev: ListItem | undefined;
+  for (let k = items.length - 1; k >= 0; k--) {
+    if (items[k]!.indent <= candidate.indent) {
+      if (items[k]!.indent === candidate.indent) prev = items[k];
+      break;
+    }
+  }
+  if (prev && prev.ordered && prev.listType !== null && prev.listType !== "1") {
+    const value = letteredValue(candidate, prev.listType);
+    if (value !== null && prev.value !== null && value === prev.value + 1) {
+      return {
+        indent: candidate.indent,
+        ordered: true,
+        listType: prev.listType,
+        value,
+        task: false,
+        checked: false,
+        text: candidate.text,
+      };
+    }
+    return "break";
+  }
+  const type = confirmLetteredStart(lines, idx, candidate);
+  if (!type) return null;
+  return {
+    indent: candidate.indent,
+    ordered: true,
+    listType: type,
+    value: letteredValue(candidate, type),
+    task: false,
+    checked: false,
+    text: candidate.text,
+  };
+}
 
 async function renderMarkdownBlocks(markdown: string, images: InlineImageSink): Promise<string> {
   const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
@@ -601,12 +798,18 @@ async function renderMarkdownBlocks(markdown: string, images: InlineImageSink): 
   let i = 0;
 
   const isBlank = (line: string) => line.trim() === "";
-  const startsBlock = (line: string) =>
+  // A lettered/roman line opens a list block only when sequence-confirmed.
+  const letteredStartAt = (idx: number): OrderedListType | null => {
+    const candidate = parseLetteredCandidate(lines[idx]!);
+    return candidate ? confirmLetteredStart(lines, idx, candidate) : null;
+  };
+  const startsBlock = (line: string, idx: number) =>
     /^```/.test(line) ||
     /^#{1,6}\s/.test(line) ||
     /^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line) ||
     /^>/.test(line) ||
-    LIST_LINE.test(line);
+    LIST_LINE.test(line) ||
+    letteredStartAt(idx) !== null;
 
   while (i < lines.length) {
     const line = lines[i]!;
@@ -667,7 +870,7 @@ async function renderMarkdownBlocks(markdown: string, images: InlineImageSink): 
     }
 
     // Lists (incl. task lists), one indent level of nesting.
-    if (LIST_LINE.test(line)) {
+    if (LIST_LINE.test(line) || letteredStartAt(i) !== null) {
       const items: ListItem[] = [];
       while (i < lines.length) {
         const current = lines[i]!;
@@ -687,8 +890,10 @@ async function renderMarkdownBlocks(markdown: string, images: InlineImageSink): 
             }
           }
           items.push({
-            indent: Math.floor(match[1]!.replace(/\t/g, "  ").length / 2),
+            indent: listIndent(match[1]!),
             ordered,
+            listType: ordered ? "1" : null,
+            value: ordered ? Number.parseInt(marker, 10) : null,
             task,
             checked,
             text,
@@ -696,12 +901,23 @@ async function renderMarkdownBlocks(markdown: string, images: InlineImageSink): 
           i++;
           continue;
         }
+        // Lettered/roman lines join only as confirmed sequences.
+        const candidate = parseLetteredCandidate(current);
+        if (candidate) {
+          const decision = letteredItem(lines, i, candidate, items);
+          if (decision === "break") break;
+          if (decision) {
+            items.push(decision);
+            i++;
+            continue;
+          }
+        }
         // Indented continuation of the previous item.
         if (
           !isBlank(current) &&
           /^\s{2,}\S/.test(current) &&
           items.length > 0 &&
-          !startsBlock(current)
+          !startsBlock(current, i)
         ) {
           items[items.length - 1]!.text += ` ${current.trim()}`;
           i++;
@@ -716,7 +932,7 @@ async function renderMarkdownBlocks(markdown: string, images: InlineImageSink): 
     // Paragraph: consecutive lines until a blank line or another block.
     const paragraph: string[] = [line];
     i++;
-    while (i < lines.length && !isBlank(lines[i]!) && !startsBlock(lines[i]!)) {
+    while (i < lines.length && !isBlank(lines[i]!) && !startsBlock(lines[i]!, i)) {
       paragraph.push(lines[i]!);
       i++;
     }
@@ -734,12 +950,32 @@ async function renderList(items: ListItem[], images: InlineImageSink): Promise<s
     html += await renderListRun(run, images);
     run = [];
   };
+  // The run kind is the marker system, not just ordered-vs-bullet: a
+  // numeric run and a lettered run are separate lists, and so are the
+  // a / A / i / I systems among themselves.
+  const runKey = (item: ListItem) => (item.ordered ? `ol:${item.listType}` : "ul");
   for (const item of items) {
-    if (run.length > 0 && run[0]!.ordered !== item.ordered) await flush();
+    if (run.length > 0 && runKey(run[0]!) !== runKey(item)) await flush();
     run.push(item);
   }
   await flush();
   return html;
+}
+
+/**
+ * The `<ol>` attributes carrying a list's marker semantics: the marker
+ * type (omitted for the default numeric system) and the start (omitted
+ * when 1, and outside the 1–9999 range sanitizeHtml would keep anyway).
+ * The start comes from the run's first item only — later markers in the
+ * source do not renumber the list.
+ */
+function orderedListAttrs(item: ListItem): string {
+  let attrs = "";
+  if (item.listType && item.listType !== "1") attrs += ` type="${item.listType}"`;
+  if (item.value !== null && item.value > 1 && item.value <= 9999) {
+    attrs += ` start="${item.value}"`;
+  }
+  return attrs;
 }
 
 /**
@@ -781,7 +1017,9 @@ async function renderListRun(items: ListItem[], images: InlineImageSink): Promis
       idx = next;
     }
     if (asTasks) return `<ul data-type="taskList">${out}</ul>`;
-    return list[0]!.ordered ? `<ol>${out}</ol>` : `<ul>${out}</ul>`;
+    const first = list[0]!;
+    if (!first.ordered) return `<ul>${out}</ul>`;
+    return `<ol${orderedListAttrs(first)}>${out}</ol>`;
   };
 
   return renderItems(normalised);
