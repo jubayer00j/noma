@@ -4,7 +4,7 @@ All notable changes to Noma. Dates are merge dates on `main`.
 
 ## 2026-10-26
 
-### Search snippets keep list markers — PR #TBD
+### Search snippets keep list markers — PR #98
 
 - Consistency follow-up to PR #94: the All Notes cards learned to show a list's ordering, but search results still built their snippets with the flat plain-text extractor, so the same note found through search snippeted as the unordered run "Hlw 1 2 3 …".
 - Snippets are now cut from the same structure-aware preview text the cards use: list items keep their computed markers (numbers honouring start and type, bullets, checkboxes), and the match window is located in that structured text, falling back to the head of the note when a flat-text match can't be located there. Presentation only — scoring still runs on the flat extractor exactly as before, locked notes stay title-only with no snippet, and the structured text is built only for notes that actually match, never for the whole library.
