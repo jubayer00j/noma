@@ -69,6 +69,40 @@ describe("searchNotes snippets keep list markers", () => {
     expect(snippet.endsWith("…")).toBe(true);
   });
 
+  it("does not window on a generated list marker for a numeric query", () => {
+    const note = makeNote("groceries", {
+      title: "Shopping",
+      content:
+        "<ol><li><p>Step one</p></li><li><p>Step two</p></li><li><p>Step three</p></li></ol>" +
+        "<p>Weekly groceries for the house: please order 2 kg of rice from the market on Friday.</p>",
+    });
+    const results = searchNotes("2", [note], folders, tags);
+    expect(results).toHaveLength(1);
+    // Body-only hit: the typed "2" in the prose, not any list marker.
+    expect(results[0]?.score).toBe(3);
+    const snippet = results[0]?.snippet ?? "";
+    // The first "2" in the preview text is the second item's generated
+    // marker ("2. Step two"); the window must sit on the typed "2"
+    // instead, far enough into the note that the list is out of frame.
+    expect(snippet.startsWith("…")).toBe(true);
+    expect(snippet).toContain("order 2 kg");
+    expect(snippet).not.toContain("Step");
+  });
+
+  it("windows on typed text that itself looks like a list marker", () => {
+    const note = makeNote("tickets", {
+      title: "Trip notes",
+      content: "<p>2. Remember the tickets for the train on Sunday morning.</p>",
+    });
+    const results = searchNotes("2", [note], folders, tags);
+    expect(results).toHaveLength(1);
+    const snippet = results[0]?.snippet ?? "";
+    // The only "2" is marker-shaped but genuinely typed prose; with no
+    // content occurrence to prefer, the snippet windows on it as before.
+    expect(snippet.startsWith("2. Remember")).toBe(true);
+    expect(snippet).toContain("Remember the tickets");
+  });
+
   it("gives a title-only match the structured head snippet", () => {
     const note = makeNote("titled", {
       title: "Zebra plans",
