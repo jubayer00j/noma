@@ -651,6 +651,31 @@ describe("semantic scores and result blending", () => {
     expect(merged[0]!.snippet).toContain("Heavy rain all week.");
   });
 
+  it("semantic-only snippets keep list markers, plain notes unchanged", () => {
+    const list = baseNote({
+      id: "list",
+      title: "Testing",
+      content:
+        '<ol start="1"><li>Hlw</li></ol><ul><li>1</li><li>2</li><li>3</li></ul><ol start="2"><li>Hi</li></ol>',
+    });
+    const plain = baseNote({ id: "plain", content: "<p>Heavy rain all week.</p>" });
+    const merged = mergeSemanticResults(
+      [],
+      new Map([
+        ["list", 0.9],
+        ["plain", 0.9],
+      ]),
+      [list, plain],
+    );
+    const listHit = merged.find((r) => r.note.id === "list");
+    expect(listHit).toBeDefined();
+    expect(listHit!.snippet).toContain("1.");
+    expect(listHit!.snippet).toContain("•");
+    expect(listHit!.snippet).toContain("2. Hi");
+    const plainHit = merged.find((r) => r.note.id === "plain");
+    expect(plainHit!.snippet).toBe("Heavy rain all week.");
+  });
+
   it("boosts keyword hits but never lets a stale vector surface an ineligible note", async () => {
     const { db, target } = await indexedDb();
     const notes = await db.notes.toArray();

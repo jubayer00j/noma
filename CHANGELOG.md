@@ -8,7 +8,7 @@ All notable changes to Noma. Dates are merge dates on `main`.
 
 - Consistency follow-up to PR #94: the All Notes cards learned to show a list's ordering, but search results still built their snippets with the flat plain-text extractor, so the same note found through search snippeted as the unordered run "Hlw 1 2 3 …".
 - Snippets are now cut from the same structure-aware preview text the cards use: list items keep their computed markers (numbers honouring start and type, bullets, checkboxes), and the match window is located in that structured text, falling back to the head of the note when a flat-text match can't be located there. Presentation only — scoring still runs on the flat extractor exactly as before, locked notes stay title-only with no snippet, and the structured text is built only for notes that actually match, never for the whole library.
-- Proof: four new search tests — the reported Testing-note shape snippetting with its markers, a deep body match windowed in the structured text, a title-only match taking the structured head snippet, and locked-note snippet behaviour unchanged. Full suite green.
+- Proof: four new search tests — the reported Testing-note shape snippetting with its markers, a deep body match windowed in the structured text, a title-only match taking the structured head snippet, and locked-note snippet behaviour unchanged. Semantic-only results had one flat snippet of their own inside the merge; it now uses the same structure-aware text too, proven by a blending test (a list note's semantic-only snippet carries its markers; a plain note's is unchanged). Full suite green.
 
 ## v1.2.0 — 2026-10-25
 
