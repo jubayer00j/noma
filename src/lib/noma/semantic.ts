@@ -7,6 +7,7 @@ import {
   type AiEmbeddingTarget,
 } from "./ai";
 import type { NomaDatabase } from "./db";
+import { notePreviewText } from "./note-export";
 import { htmlToPlainText } from "./sanitize";
 import type { SearchResult } from "./search";
 import type { Note, NoteEmbedding } from "./types";
@@ -504,7 +505,7 @@ export function mergeSemanticResults(
     merged.push({
       note,
       score: similarity * SEMANTIC_WEIGHT,
-      snippet: htmlToPlainText(note.content).slice(0, 120),
+      snippet: notePreviewText(note.content).slice(0, 120),
     });
   }
   return merged.sort((a, b) => b.score - a.score || b.note.updatedAt - a.note.updatedAt);
