@@ -1,3 +1,4 @@
+import { notePreviewText } from "./note-export";
 import { htmlToPlainText } from "./sanitize";
 import type { Folder, Note, Tag } from "./types";
 
@@ -5,6 +6,28 @@ export interface SearchResult {
   note: Note;
   score: number;
   snippet: string;
+}
+
+/**
+ * The result snippet, cut from the structure-aware preview text (the
+ * same text the note-list cards render since PR #94) so list items keep
+ * their markers. Scoring runs on the flat extractor above; only this
+ * display text is structured. The match window is located in the
+ * structured text because the markers shift every offset; when the flat
+ * body match can't be found there (e.g. it spanned a marker boundary),
+ * fall back to the head of the note, exactly like a title-only match.
+ * Only ever called for notes that matched, so the DOM walk behind
+ * notePreviewText never runs for non-results.
+ */
+function buildSnippet(note: Note, firstTerm: string, bodyMatched: boolean): string {
+  const text = notePreviewText(note.content);
+  if (bodyMatched) {
+    const idx = text.toLowerCase().indexOf(firstTerm);
+    if (idx >= 0) {
+      return `${idx > 30 ? "…" : ""}${text.slice(Math.max(0, idx - 30), idx + 110)}…`;
+    }
+  }
+  return text.slice(0, 120);
 }
 
 /** Modular local search — swap the scoring here to add fuzzy/semantic search later. */
@@ -45,11 +68,7 @@ export function searchNotes(
     if (!matchedAll) continue;
 
     const idx = body.indexOf(terms[0]!);
-    const snippet = note.lock
-      ? ""
-      : idx >= 0
-        ? `${idx > 30 ? "…" : ""}${body.slice(Math.max(0, idx - 30), idx + 110)}…`
-        : htmlToPlainText(note.content).slice(0, 120);
+    const snippet = note.lock ? "" : buildSnippet(note, terms[0]!, idx >= 0);
     results.push({ note, score, snippet });
   }
   return results.sort((a, b) => b.score - a.score || b.note.updatedAt - a.note.updatedAt);

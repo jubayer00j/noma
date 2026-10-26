@@ -562,9 +562,10 @@ export function noteToPlainText(note: NoteContent, resolveImage?: AttachmentReso
  * above — list items keep their markers — minus the export's title line
  * (the card shows the title itself) and link URLs (link text alone),
  * flattened to the single space-separated flow the cards render, the same
- * contract htmlToPlainText gives the flat-text consumers. Word counts,
- * search snippets and AI prompts keep using htmlToPlainText; only the
- * card preview switches, so it can show a list's ordering at a glance.
+ * contract htmlToPlainText gives the flat-text consumers. Word counts
+ * and AI prompts keep using htmlToPlainText; the card preview and the
+ * search-result snippets use this text, so both can show a list's
+ * ordering at a glance.
  */
 export function notePreviewText(html: string): string {
   const body = parseBody(html);
