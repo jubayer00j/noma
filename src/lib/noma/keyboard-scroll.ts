@@ -219,3 +219,82 @@ export function attachCaretAboveKeyboard(
     scroller.style.paddingBottom = "";
   };
 }
+
+export interface SubscribeKeyboardInsetOptions {
+  getViewport?: () => VisualViewportLike | null;
+  getLayoutHeight?: () => number;
+}
+
+/**
+ * Tracks the effective on-screen-keyboard height for a surface whose
+ * bottom must dock above the keyboard (the Ask composer): the same
+ * two signals attachCaretAboveKeyboard consumes — the native shell's
+ * `noma:ime-height` event, plus its mount-time bridge value, in the
+ * installed app; the visual-viewport shrink on web — resolved through
+ * effectiveKeyboardHeightPx. The Ask view shipped (PR #101) without
+ * this: its flex column keeps the window's full height behind the
+ * keyboard in the app, so the composer sat underneath it (found on
+ * device 2026-10-29). Calls back synchronously once with the current
+ * height, then only when the height changes. Returns the unsubscribe.
+ */
+export function subscribeKeyboardInset(
+  onChange: (heightCssPx: number) => void,
+  options: SubscribeKeyboardInsetOptions = {},
+): () => void {
+  const getViewport =
+    options.getViewport ?? (() => (window.visualViewport ?? null) as VisualViewportLike | null);
+  const getLayoutHeight = options.getLayoutHeight ?? (() => window.innerHeight);
+
+  let raf = 0;
+  let nativeHeight = 0;
+  let last = -1;
+
+  // Same mount-time bridge read as attachCaretAboveKeyboard: a surface
+  // opened while the keyboard is already up gets no fresh dispatch.
+  const readNativeHeight = () => {
+    try {
+      const bridge = (window as unknown as { NomaIme?: NomaImeBridgeLike }).NomaIme;
+      const value = bridge?.getHeightCssPx?.();
+      if (typeof value === "number" && value > 0) nativeHeight = Math.round(value);
+    } catch {
+      // Absent or unusable bridge — the visualViewport path carries on.
+    }
+  };
+
+  const apply = () => {
+    const viewport = getViewport();
+    const height = effectiveKeyboardHeightPx(
+      nativeHeight,
+      viewport ? keyboardHeightPx(getLayoutHeight(), viewport) : 0,
+    );
+    if (height !== last) {
+      last = height;
+      onChange(height);
+    }
+  };
+
+  const schedule = () => {
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(apply);
+  };
+
+  const onNativeIme = (event: Event) => {
+    const value = (event as CustomEvent<number>).detail;
+    nativeHeight = typeof value === "number" && value > 0 ? Math.round(value) : 0;
+    schedule();
+  };
+
+  const viewport = getViewport();
+  viewport?.addEventListener("resize", schedule);
+  viewport?.addEventListener("scroll", schedule);
+  window.addEventListener(NATIVE_IME_EVENT, onNativeIme);
+  readNativeHeight();
+  apply();
+
+  return () => {
+    cancelAnimationFrame(raf);
+    viewport?.removeEventListener("resize", schedule);
+    viewport?.removeEventListener("scroll", schedule);
+    window.removeEventListener(NATIVE_IME_EVENT, onNativeIme);
+  };
+}

@@ -21,6 +21,7 @@ import {
   type AiSettings,
 } from "@/lib/noma/ai";
 import { buildAskPrompt, retrieveChunks } from "@/lib/noma/ask";
+import { subscribeKeyboardInset } from "@/lib/noma/keyboard-scroll";
 import {
   askDisclosureLine,
   askIndexStale,
@@ -320,12 +321,24 @@ export function AskView({
     }
   }, [active, gate, runAsk, thread.busy, thread.entries.length]);
 
+  /* ---------------- Keyboard inset ---------------- */
+
+  // The installed app's window stays full-height behind the keyboard,
+  // so without this the composer — the flex column's last child — sits
+  // underneath it (device-found, 2026-10-29). Pad the surface by the
+  // effective IME height so the composer docks above the keyboard;
+  // the inset joining the scroll effect's deps keeps the thread
+  // end-anchored as the list shrinks. Same signal the note editor's
+  // caret fix consumes (keyboard-scroll.ts).
+  const [imeInset, setImeInset] = useState(0);
+  useEffect(() => subscribeKeyboardInset(setImeInset), []);
+
   /* ---------------- Scroll ---------------- */
 
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [thread.entries, thread.busy, pendingDisclosure]);
+  }, [thread.entries, thread.busy, pendingDisclosure, imeInset]);
 
   /* ---------------- Render helpers ---------------- */
 
@@ -443,7 +456,10 @@ export function AskView({
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div
+      className="flex min-h-0 flex-1 flex-col"
+      style={imeInset > 0 ? { paddingBottom: imeInset } : undefined}
+    >
       <div ref={scrollRef} className="noma-scroll min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-3xl space-y-4 px-4 py-4 sm:px-6 sm:py-6">
           {gate !== "ready" ? (
