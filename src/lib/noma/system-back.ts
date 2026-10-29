@@ -214,6 +214,12 @@ export interface WorkspaceBackState {
   searchOpen: boolean;
   activeNoteId: string | null;
   noteMode: "read" | "edit";
+  /**
+   * The Ask Noma surface sits under an open note but above the list, so
+   * its step resolves after "note": a note opened from a source card
+   * backs out to Ask first, and Ask itself backs out to the list.
+   */
+  askOpen: boolean;
 }
 
 export type WorkspaceBackStep =
@@ -225,7 +231,8 @@ export type WorkspaceBackStep =
   | "prompt"
   | "search"
   | "editor"
-  | "note";
+  | "note"
+  | "ask";
 
 export function resolveWorkspaceBackStep(state: WorkspaceBackState): WorkspaceBackStep | null {
   if (state.lockDialogOpen) return "lock-dialog";
@@ -237,5 +244,6 @@ export function resolveWorkspaceBackStep(state: WorkspaceBackState): WorkspaceBa
   if (state.searchOpen) return "search";
   if (state.activeNoteId && state.noteMode === "edit") return "editor";
   if (state.activeNoteId) return "note";
+  if (state.askOpen) return "ask";
   return null;
 }

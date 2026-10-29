@@ -19,7 +19,7 @@ import {
   Trash2,
   WifiOff,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { format } from "date-fns";
 import { Bell } from "lucide-react";
@@ -73,6 +73,7 @@ import {
   type AiSettings,
 } from "@/lib/noma/ai";
 import { AiDialog, type AiDialogMode } from "./ai-dialog";
+import { AskView } from "./ask-view";
 import { AI_SETTINGS_CHANGED_EVENT } from "./ai-section";
 import { useAppLock } from "@/lib/noma/AppLockContext";
 import { useShortcutConsumption } from "@/lib/noma/shortcut";
@@ -306,6 +307,14 @@ interface WorkspaceSurfacesProps {
   activeNote: Note | null;
   activeNoteId: string | null;
   noteMode: "read" | "edit";
+  /** True while the Ask Noma surface is the visible one (no note above it). */
+  askOpen: boolean;
+  /**
+   * The Ask view node, or null until its first open. Rendered (hidden,
+   * never unmounted) whenever present so its memory-only thread survives
+   * for the session, per spec §4.
+   */
+  askView: ReactNode;
   view: ViewState;
   /** True while the notes live query has not returned yet. */
   notesLoading: boolean;
@@ -351,6 +360,8 @@ export function WorkspaceSurfaces({
   activeNote,
   activeNoteId,
   noteMode,
+  askOpen,
+  askView,
   view,
   notesLoading,
   visibleNotes,
@@ -482,11 +493,19 @@ export function WorkspaceSurfaces({
           )}
         </div>
       ) : null}
+      {askView ? (
+        <div
+          className={askOpen ? "flex min-h-0 flex-1 flex-col" : "hidden"}
+          data-testid="ask-surface"
+        >
+          {askView}
+        </div>
+      ) : null}
       <NotesListSurfaceContext.Provider value={surfaceApi}>
         <div
           ref={setSurfaceElCallback}
           className="noma-scroll notes-list-surface min-h-0 flex-1 overflow-y-auto pb-safe"
-          hidden={noteOpen}
+          hidden={noteOpen || askOpen}
           tabIndex={-1}
           data-testid="notes-list-surface"
           onScroll={(e) => {
@@ -650,6 +669,15 @@ export function Workspace() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
+  /**
+   * Ask Noma surface (spec §4): open above the list, under any open note.
+   * `askMounted` latches on first open so the Ask view — and its
+   * memory-only thread — survives closing and reopening for the session;
+   * nothing about the thread is ever persisted.
+   */
+  const [askOpen, setAskOpen] = useState(false);
+  const [askMounted, setAskMounted] = useState(false);
+  const [askInitialQuestion, setAskInitialQuestion] = useState<string | null>(null);
   const [prompt, setPrompt] = useState<PromptRequest | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [reminderTargetNote, setReminderTargetNote] = useState<Note | null>(null);
@@ -847,6 +875,18 @@ export function Workspace() {
     [openNote],
   );
 
+  /**
+   * Open the Ask Noma surface, optionally carrying a first question
+   * (the Search screen hands its typed query over). Ask stays open
+   * underneath any note opened from a source card, so closing that
+   * note lands back on the thread.
+   */
+  const openAsk = useCallback((question?: string) => {
+    if (question && question.trim()) setAskInitialQuestion(question);
+    setAskMounted(true);
+    setAskOpen(true);
+  }, []);
+
   /** Enter the editor for the currently open note (from the Read View). */
   const openNoteForEdit = useCallback(() => {
     setEditReturnTo("read");
@@ -1023,11 +1063,12 @@ export function Workspace() {
       if (event.key === "Escape" && !searchOpen) {
         if (activeNoteId && noteMode === "edit") void goBackFromEditor();
         else if (activeNoteId) void closeNote();
+        else if (askOpen) setAskOpen(false);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleNewNote, searchOpen, activeNoteId, noteMode, goBackFromEditor, closeNote]);
+  }, [handleNewNote, searchOpen, activeNoteId, noteMode, goBackFromEditor, closeNote, askOpen]);
 
   // Latest navigation state for the Android system back button, avoiding
   // stale closures in the native listener. The listener itself lives in
@@ -1043,6 +1084,7 @@ export function Workspace() {
     versionHistoryNote: Note | null;
     activeNoteId: string | null;
     noteMode: "read" | "edit";
+    askOpen: boolean;
   }>({
     lockDialogOpen: false,
     aiDialogOpen: false,
@@ -1053,6 +1095,7 @@ export function Workspace() {
     versionHistoryNote: null,
     activeNoteId: null,
     noteMode: "read",
+    askOpen: false,
   });
   backStateRef.current = {
     lockDialogOpen: Boolean(lockDialog),
@@ -1064,6 +1107,7 @@ export function Workspace() {
     versionHistoryNote,
     activeNoteId,
     noteMode,
+    askOpen,
   };
 
   /**
@@ -1084,6 +1128,7 @@ export function Workspace() {
       searchOpen: state.searchOpen,
       activeNoteId: state.activeNoteId,
       noteMode: state.noteMode,
+      askOpen: state.askOpen,
     });
     switch (step) {
       case "lock-dialog":
@@ -1113,6 +1158,9 @@ export function Workspace() {
         return true;
       case "note":
         void closeNote();
+        return true;
+      case "ask":
+        setAskOpen(false);
         return true;
       default:
         return false;
@@ -1307,7 +1355,13 @@ export function Workspace() {
       onSelectView={(next) => {
         setView(next);
         setMobileNavOpen(false);
+        setAskOpen(false);
         void closeNote();
+      }}
+      askActive={askOpen && !activeNote}
+      onOpenAsk={() => {
+        setMobileNavOpen(false);
+        openAsk();
       }}
       onNewNote={handleNewNote}
       onOpenToday={openTodayNote}
@@ -1593,6 +1647,19 @@ export function Workspace() {
                 {overflowMenu}
               </div>
             </>
+          ) : askOpen ? (
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5 text-muted-foreground"
+                onClick={() => setAskOpen(false)}
+              >
+                <ArrowLeft className="size-4" />
+                <span className="hidden sm:inline">{viewTitle(view, allFolders, allTags)}</span>
+              </Button>
+              <span className="truncate font-serif text-lg font-medium">Ask Noma</span>
+            </>
           ) : (
             <>
               <h1 className="truncate font-serif text-lg font-medium">
@@ -1655,6 +1722,21 @@ export function Workspace() {
           activeNote={activeNote}
           activeNoteId={activeNoteId}
           noteMode={noteMode}
+          askOpen={askOpen && !activeNote}
+          askView={
+            askMounted ? (
+              <AskView
+                db={db}
+                ownerId={ownerId}
+                aiSettings={aiSettings}
+                notes={allNotes}
+                active={askOpen && !activeNote}
+                initialQuestion={askInitialQuestion}
+                onConsumeInitialQuestion={() => setAskInitialQuestion(null)}
+                onOpenNote={openNote}
+              />
+            ) : null
+          }
           view={view}
           notesLoading={notes === undefined}
           visibleNotes={visibleNotes}
@@ -1700,6 +1782,24 @@ export function Workspace() {
               className="h-12 border-0 px-0 shadow-none focus-visible:ring-0"
             />
           </div>
+          {aiSettings?.enabled && aiSettings.apiKey.trim() !== "" && (
+            <button
+              type="button"
+              onClick={() => {
+                const carried = query;
+                setSearchOpen(false);
+                setQuery("");
+                openAsk(carried);
+              }}
+              className="flex w-full items-center gap-2.5 border-b border-border px-4 py-3 text-left transition-colors hover:bg-accent/60"
+            >
+              <Sparkles className="size-4 shrink-0 text-primary" aria-hidden="true" />
+              <span className="text-sm font-medium">Ask Noma</span>
+              <span className="truncate text-xs text-muted-foreground">
+                Get an answer from your notes
+              </span>
+            </button>
+          )}
           <div className="noma-scroll max-h-80 overflow-y-auto p-2">
             {query.trim() === "" ? (
               <p className="px-3 py-6 text-center text-sm text-muted-foreground">

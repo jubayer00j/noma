@@ -16,6 +16,7 @@ import {
   Pin,
   Plus,
   Settings as SettingsIcon,
+  Sparkles,
   Star,
   Trash2,
   UserRound,
@@ -38,6 +39,9 @@ interface SidebarProps {
   tags: Tag[];
   view: ViewState;
   onSelectView: (view: ViewState) => void;
+  /** Ask Noma is a surface, not a notes view — it gets its own entry + active flag. */
+  askActive?: boolean;
+  onOpenAsk?: () => void;
   onNewNote: () => void;
   onOpenToday: () => void;
   onCreateFolder: () => void;
@@ -89,6 +93,8 @@ export function NomaSidebar({
   tags,
   view,
   onSelectView,
+  askActive,
+  onOpenAsk,
   onNewNote,
   onOpenToday,
   onCreateFolder,
@@ -165,6 +171,14 @@ export function NomaSidebar({
 
       <nav className="noma-scroll flex-1 space-y-6 overflow-y-auto px-3 pb-6">
         <div className="space-y-0.5">
+          {onOpenAsk && (
+            <NavItem
+              label="Ask Noma"
+              icon={Sparkles}
+              active={Boolean(askActive)}
+              onClick={onOpenAsk}
+            />
+          )}
           <NavItem
             label="All Notes"
             icon={FileText}

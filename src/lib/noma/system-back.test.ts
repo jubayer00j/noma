@@ -38,6 +38,7 @@ const CLOSED: WorkspaceBackState = {
   searchOpen: false,
   activeNoteId: null,
   noteMode: "read",
+  askOpen: false,
 };
 
 afterEach(() => {
@@ -418,5 +419,18 @@ describe("resolveWorkspaceBackStep — extended chain order", () => {
     expect(resolveWorkspaceBackStep({ ...CLOSED, activeNoteId: "n1", noteMode: "read" })).toBe(
       "note",
     );
+  });
+
+  // Ask Noma sits under an open note but above the list: a note opened
+  // from a source card backs out to Ask first, Ask backs out to the list.
+  it("ask resolves after the note steps and before falling through", () => {
+    expect(resolveWorkspaceBackStep({ ...CLOSED, askOpen: true })).toBe("ask");
+    expect(
+      resolveWorkspaceBackStep({ ...CLOSED, askOpen: true, activeNoteId: "n1", noteMode: "read" }),
+    ).toBe("note");
+    expect(
+      resolveWorkspaceBackStep({ ...CLOSED, askOpen: true, activeNoteId: "n1", noteMode: "edit" }),
+    ).toBe("editor");
+    expect(resolveWorkspaceBackStep({ ...CLOSED, askOpen: true, searchOpen: true })).toBe("search");
   });
 });
