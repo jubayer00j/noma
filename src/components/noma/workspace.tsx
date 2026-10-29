@@ -110,7 +110,12 @@ import {
   cleanupOrphanedReminders,
 } from "@/lib/noma/notes";
 import { highlightTerms, searchNotes } from "@/lib/noma/search";
-import { mergeSemanticResults, semanticScores } from "@/lib/noma/semantic";
+import {
+  SEMANTIC_THRESHOLD,
+  mergeSemanticResults,
+  semanticScores,
+  similarityFloorFor,
+} from "@/lib/noma/semantic";
 import { getOrCreateDailyNote } from "@/lib/noma/daily";
 import { restoreVersion } from "@/lib/noma/versions";
 import {
@@ -1292,6 +1297,7 @@ export function Workspace() {
   // results. Any failure — offline, quota, provider down — leaves the
   // keyword results exactly as they were; there is no error UI here.
   const [semanticScoreMap, setSemanticScoreMap] = useState<Map<string, number> | null>(null);
+  const [semanticFloor, setSemanticFloor] = useState(SEMANTIC_THRESHOLD);
   useEffect(() => {
     if (!searchOpen || !query.trim() || !db) {
       setSemanticScoreMap(null);
@@ -1307,7 +1313,10 @@ export function Workspace() {
             return;
           }
           const scores = await semanticScores(db, query, target);
-          if (!cancelled) setSemanticScoreMap(scores.size ? scores : null);
+          if (!cancelled) {
+            setSemanticFloor(similarityFloorFor(target.embeddingModel));
+            setSemanticScoreMap(scores.size ? scores : null);
+          }
         } catch {
           if (!cancelled) setSemanticScoreMap(null);
         }
@@ -1338,8 +1347,9 @@ export function Workspace() {
         keywordResults,
         semanticScoreMap,
         allNotes.filter((note) => !note.deleted),
+        semanticFloor,
       ),
-    [keywordResults, semanticScoreMap, allNotes],
+    [keywordResults, semanticScoreMap, allNotes, semanticFloor],
   );
 
   if (dbLoading || !db) {

@@ -133,8 +133,8 @@ export interface EmbeddingCapability {
 
 export const EMBEDDING_CAPABILITIES: Record<string, EmbeddingCapability> = {
   gemini: { mode: "native", defaultModel: "gemini-embedding-001" },
-  openai: { mode: "compatible", defaultModel: "text-embedding-3-small" },
-  openrouter: { mode: "compatible", defaultModel: "openai/text-embedding-3-small" },
+  openai: { mode: "compatible", defaultModel: "text-embedding-3-large" },
+  openrouter: { mode: "compatible", defaultModel: "openai/text-embedding-3-large" },
   groq: { mode: "none" },
   together: { mode: "compatible" },
   deepseek: { mode: "none" },
