@@ -79,6 +79,13 @@ import { version as packageVersion } from "../../package.json";
 
 export const Route = createFileRoute("/settings")({
   ssr: false,
+  validateSearch: (search: Record<string, unknown>): { screen?: SettingsScreen } => {
+    const raw = search["screen"];
+    return typeof raw === "string" &&
+      ["sync", "security", "appearance", "writing", "ai", "data", "account", "about"].includes(raw)
+      ? { screen: raw as SettingsScreen }
+      : {};
+  },
   head: () => ({
     links: [{ rel: "canonical", href: "https://mynoma.vercel.app/settings" }],
     meta: [
@@ -90,12 +97,17 @@ export const Route = createFileRoute("/settings")({
       },
     ],
   }),
-  component: () => (
-    <AppGate>
-      <SettingsPage />
-    </AppGate>
-  ),
+  component: SettingsRoute,
 });
+
+function SettingsRoute() {
+  const { screen } = Route.useSearch();
+  return (
+    <AppGate>
+      <SettingsPage initialScreen={screen} />
+    </AppGate>
+  );
+}
 
 /**
  * Settings IA (restructure): a root list of categories — each row
@@ -143,13 +155,15 @@ const ROW_GROUPS: ReadonlyArray<ReadonlyArray<SettingsScreen>> = [
   ["account", "about"],
 ];
 
-export function SettingsPage() {
+export function SettingsPage({
+  initialScreen,
+}: { initialScreen?: SettingsScreen | undefined } = {}) {
   const { settings, update } = useSettings();
   const auth = useAuth();
   const { db } = useDatabase();
   const fileInput = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [screen, setScreen] = useState<SettingsScreen | null>(null);
+  const [screen, setScreen] = useState<SettingsScreen | null>(initialScreen ?? null);
   const [busy, setBusy] = useState<string | null>(null);
   const [pendingImport, setPendingImport] = useState<BackupPayload | null>(null);
   const [unlockOpen, setUnlockOpen] = useState(false);

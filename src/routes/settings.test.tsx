@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getSettingsBackHandler } from "@/lib/noma/system-back";
-import { SettingsPage } from "./settings";
+import { SettingsPage, type SettingsScreen } from "./settings";
 
 /* Settings restructure: the restructured page rendered at its real
  * seam — the route component itself, with the heavy blocks replaced
@@ -126,12 +126,12 @@ vi.mock("@/components/noma/backup-unlock-dialog", () => ({
 let container: HTMLDivElement;
 let root: Root;
 
-function renderPage() {
+function renderPage(initialScreen?: SettingsScreen) {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   act(() => {
-    root.render(<SettingsPage />);
+    root.render(<SettingsPage initialScreen={initialScreen} />);
   });
 }
 
@@ -241,6 +241,13 @@ describe("Settings root list", () => {
 });
 
 describe("Settings sub-screens", () => {
+  it("opens directly on the AI screen when initialScreen is given (deep link)", () => {
+    renderPage("ai");
+    expect(isShown("ai")).toBe(true);
+    expect(isShown("root")).toBe(false);
+    expect(screenEl("ai").querySelector('[data-testid="ai-section"]')).not.toBeNull();
+  });
+
   it("opens Appearance with the theme picker; header back returns to the root", () => {
     renderPage();
     click(rowButton("Appearance"));
