@@ -2,6 +2,13 @@
 
 All notable changes to Noma. Dates are merge dates on `main`.
 
+## 2026-10-30
+
+### Signed release builds: release APK + bundle from CI
+
+- Until now every APK Noma shipped (v1.1.0, v1.2.0) was the CI **debug** build, and nothing could produce anything else: CI ran only `assembleDebug` and the release build type had no signing config. Noma now has a real release key (`noma-release`, RSA 4096, 30-year validity) held the same way as the debug key — the keystore lives only in GitHub Actions secrets (`ANDROID_RELEASE_KEYSTORE_BASE64` / `_PASSWORD` / `_KEY_ALIAS` / `_KEY_PASSWORD`), never in the repo. `build.gradle` gains a release signing config that reads those values from the environment and stays unsigned without them (local release builds behave exactly as before; the debug path is untouched), and the Android workflow now also runs `assembleRelease bundleRelease`, prints the release APK's certificate, and uploads two new artifacts: **app-release** (the signed APK, for GitHub Releases / sideload) and **app-release-bundle** (the AAB, kept ready for a future Play listing — no Play Console account exists today, so distribution stays sideload).
+- One follow-up is deliberately outside this PR, and it must happen **before a release build is used for real**: the new certificate (SHA-1 52:CE:4C:…:93:6B) needs registering in the Firebase console, or Google Sign-In will fail on release builds — the same family of breakage as the redirect_uri_mismatch fix, one layer down. Debug builds keep the debug certificate and are unaffected.
+
 ## 2026-10-29
 
 ### Ask Noma PR-A: chunk-level semantic index (data layer) — PR #99
