@@ -363,6 +363,7 @@ describe("buildAskPrompt", () => {
       `reply with exactly this sentence and nothing else: ${ASK_REFUSAL_SENTENCE}`,
     );
     expect(prompt).toContain("Answer in the language of the question.");
+    expect(prompt).toContain("always with Western digits (0-9)");
     expect(prompt.endsWith("Question: When does it rain?")).toBe(true);
     expect(prompt.length).toBeLessThanOrEqual(AI_MAX_INPUT_CHARS);
   });
@@ -495,5 +496,31 @@ describe("parseAskAnswer", () => {
     expect(parseAskAnswer("It is in the third note [9], see also [0].", excerpts)).toEqual({
       status: "refusal",
     });
+  });
+
+  it("accepts a citation written with Bengali digits and normalises the marker", () => {
+    const result = parseAskAnswer("বাইকের সার্ভিসিং করতে ১২০০ টাকা খরচ হয়েছে [১]।", excerpts);
+    expect(result.status).toBe("answer");
+    if (result.status !== "answer") throw new Error("expected an answer");
+    expect(result.text).toContain("[1]");
+    expect(result.text).not.toContain("[১]");
+    expect(result.text).toContain("১২০০");
+    expect(result.citations).toEqual([{ n: 1, noteId: "a", chunkIndex: 0 }]);
+  });
+
+  it("mixes Bengali- and Western-digit citations in first-use order", () => {
+    const result = parseAskAnswer("First [২], then [1], again [২].", excerpts);
+    expect(result).toEqual({
+      status: "answer",
+      text: "First [2], then [1], again [2].",
+      citations: [
+        { n: 2, noteId: "b", chunkIndex: 2 },
+        { n: 1, noteId: "a", chunkIndex: 0 },
+      ],
+    });
+  });
+
+  it("still refuses when the only citation is an out-of-range Bengali digit", () => {
+    expect(parseAskAnswer("কিছু একটা [৯]।", excerpts)).toEqual({ status: "refusal" });
   });
 });

@@ -186,7 +186,7 @@ const ASK_INSTRUCTIONS = [
   "",
   "Rules:",
   "- Answer using ONLY the numbered excerpts below. Do not use outside knowledge.",
-  "- Cite every claim with its excerpt number, like [1].",
+  "- Cite every claim with its excerpt number, like [1] — always with Western digits (0-9), whatever language you answer in.",
   `- If the excerpts do not answer the question, reply with exactly this sentence and nothing else: ${ASK_REFUSAL_SENTENCE}`,
   "- Answer in the language of the question.",
   "- Be concise.",
@@ -298,10 +298,31 @@ export function buildAskPrompt(
  * an answer either: Ask's promise is grounded-or-silent, and text the
  * model produced without citing any excerpt it was given is
  * indistinguishable from an ungrounded invention, so it degrades to
- * the same refusal the view renders honestly. The text is otherwise
- * the model's own words — rendering it safely is the view's job
- * (PR-C), exactly as with summaries.
+ * the same refusal the view renders honestly. Citation numbers may
+ * arrive in Bengali digits ([১]) when the model answers in Bengali —
+ * live acceptance (checklist W2) caught correct answers being
+ * discarded for exactly that — so digits are normalised inside the
+ * brackets before validation, and the rendered marker is rewritten
+ * to Western digits; digits in the answer's prose are untouched.
+ * The text is otherwise the model's own words — rendering it safely
+ * is the view's job (PR-C), exactly as with summaries.
  */
+
+/** "০" — Bengali digit zero; the block ০–৯ is contiguous. */
+const BENGALI_DIGIT_ZERO = "০".codePointAt(0)!;
+
+/** Parses a citation number written in Western or Bengali digits. */
+function citationNumber(digits: string): number {
+  let out = "";
+  for (const ch of digits) {
+    const cp = ch.codePointAt(0)!;
+    out +=
+      cp >= BENGALI_DIGIT_ZERO && cp <= BENGALI_DIGIT_ZERO + 9
+        ? String(cp - BENGALI_DIGIT_ZERO)
+        : ch;
+  }
+  return Number(out);
+}
 export function parseAskAnswer(raw: string, excerpts: AskExcerpt[]): ParsedAskAnswer {
   const normalized = raw.trim().replace(/\s+/g, " ");
   if (normalized.startsWith(ASK_REFUSAL_SENTENCE)) return { status: "refusal" };
@@ -309,15 +330,15 @@ export function parseAskAnswer(raw: string, excerpts: AskExcerpt[]): ParsedAskAn
   const citations: AskCitation[] = [];
   const seen = new Set<number>();
   const text = raw
-    .replace(/\[(\d+)\]/g, (match, digits: string) => {
-      const n = Number(digits);
+    .replace(/\[([0-9০-৯]+)\]/g, (match, digits: string) => {
+      const n = citationNumber(digits);
       if (n < 1 || n > excerpts.length) return "";
       if (!seen.has(n)) {
         seen.add(n);
         const excerpt = excerpts[n - 1]!;
         citations.push({ n, noteId: excerpt.noteId, chunkIndex: excerpt.chunkIndex });
       }
-      return match;
+      return `[${n}]`;
     })
     .replace(/[ \t]{2,}/g, " ")
     .trim();
