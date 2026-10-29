@@ -38,7 +38,7 @@ All notable changes to Noma. Dates are merge dates on `main`.
 
 ### Ask Noma fix: Bengali-digit citations (checklist W2) — PR #103
 
-### Embedding calibration: per-model similarity floors + 3-large defaults
+### Embedding calibration: per-model similarity floors + 3-large defaults — PR #104
 
 - Follow-up to the W6 asterisk: the single 0.5 similarity floor was calibrated on Gemini's embedding geometry and did not travel — on OpenRouter's pinned `text-embedding-3-small`, an English question about a Bengali note scored below it and Ask answered "No matching passages." A measured matrix (4 notes × 8 questions, EN/BN both directions plus unrelated controls; spec in the workspace projects folder) showed why a floor change alone could not fix that model: its cross-language matches land at 0.07–0.34, BELOW an unrelated control at 0.45 — no floor separates them. `text-embedding-3-large` separates cleanly (native dims: matches 0.41–0.78, unrelated ≤ 0.36).
 - The OpenAI and OpenRouter slots therefore default to `text-embedding-3-large` now (existing indexes on those slots land in the familiar built-with-a-different-model rebuild state; Gemini untouched), and the floor is resolved per embedding model via the new `similarityFloorFor`: 3-large (either vendor spelling) → 0.38, everything else → the 0.5 default. Ask retrieval and both search-merge sites consume the same resolved floor, so they cannot disagree about an index. New tests pin the floor mapping, the merge boundary, a retrieval boundary (0.45 counts under 3-large, not under Gemini), and the new pinned defaults; the two transport tests that assert the posted default model follow the change. Full suite green at 717.
