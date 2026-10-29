@@ -101,6 +101,31 @@ export interface NoteEmbedding {
   updatedAt: number;
 }
 
+/**
+ * One chunk of a note's text with its own embedding vector — the
+ * chunk-level half of the semantic index (see semantic.ts), added for
+ * Ask Noma. Same rules as NoteEmbedding: derived data, local to the
+ * device, never part of the backup payload, never synced, and never
+ * stored for a note `noteEligibleForAi` excludes. `providerKey` is the
+ * same embedding-space identity the note-level vector carries;
+ * `vector` is L2-normalised. The chunk's plain `text` is stored with
+ * the row so answer prompts can be assembled without re-deriving it.
+ */
+export interface NoteChunk {
+  /** `${noteId}#${chunkIndex}` */
+  id: string;
+  noteId: string;
+  chunkIndex: number;
+  providerKey: string;
+  dims: number;
+  vector: Float32Array;
+  /** FNV-1a (hex) of the exact chunk text that was embedded. */
+  contentHash: string;
+  /** The chunk's plain text. Local-only, like the rest of the index. */
+  text: string;
+  updatedAt: number;
+}
+
 export interface Folder {
   id: string;
   name: string;

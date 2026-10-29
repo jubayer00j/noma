@@ -10,6 +10,7 @@ import {
 import { type NomaDatabase } from "./db";
 import { embeddedTextForNote, fnv1a } from "./semantic";
 import {
+  collectLibrarySnapshot,
   computeSyncHashes,
   entityContentHash,
   getSyncState,
@@ -25,6 +26,7 @@ import type {
   AttachmentMeta,
   Folder,
   Note,
+  NoteChunk,
   NoteEmbedding,
   NoteLock,
   Reminder,
@@ -143,6 +145,7 @@ class FakeDb {
   tombstones = new FakeTable<SyncTombstone>();
   syncMeta = new FakeTable<SyncState>();
   noteEmbeddings = new FakeEmbeddingTable();
+  noteChunks = new FakeTable<NoteChunk>();
 
   async transaction(...args: unknown[]): Promise<void> {
     const fn = args[args.length - 1] as () => Promise<void>;
@@ -504,6 +507,24 @@ describe("applyBackup — semantic vectors", () => {
     };
   }
 
+  function chunkRowFor(note: Note): NoteChunk {
+    return {
+      id: `${note.id}#0`,
+      noteId: note.id,
+      chunkIndex: 0,
+      providerKey: "gemini|native|gemini-embedding-001|2",
+      dims: 2,
+      vector: new Float32Array([1, 0]),
+      contentHash: fnv1a(embeddedTextForNote(note)),
+      text: embeddedTextForNote(note),
+      updatedAt: T0,
+    };
+  }
+
+  async function chunksOf(noteId: string): Promise<NoteChunk[]> {
+    return db.noteChunks.where("noteId").equals(noteId).toArray();
+  }
+
   it("merge keeps a vector whose note is unchanged and drops one whose content was replaced", async () => {
     const keep = makeNote("keep");
     const changedLocal = makeNote("changed");
@@ -511,6 +532,8 @@ describe("applyBackup — semantic vectors", () => {
     await db.notes.put(changedLocal);
     await db.noteEmbeddings.put(vectorRowFor(keep));
     await db.noteEmbeddings.put(vectorRowFor(changedLocal));
+    await db.noteChunks.put(chunkRowFor(keep));
+    await db.noteChunks.put(chunkRowFor(changedLocal));
 
     const payload = makePayload({
       notes: [
@@ -523,12 +546,16 @@ describe("applyBackup — semantic vectors", () => {
     expect((await db.notes.get("changed"))?.content).toBe("<p>remote rewrite</p>");
     expect(await db.noteEmbeddings.get("keep")).toBeDefined();
     expect(await db.noteEmbeddings.get("changed")).toBeUndefined();
+    // Chunks follow their note's vector: kept when truthful, dropped when stale.
+    expect(await chunksOf("keep")).toHaveLength(1);
+    expect(await chunksOf("changed")).toHaveLength(0);
   });
 
   it("a note tombstone (permanent delete via merge) removes the vector row too", async () => {
     const note = makeNote("n1");
     await db.notes.put(note);
     await db.noteEmbeddings.put(vectorRowFor(note));
+    await db.noteChunks.put(chunkRowFor(note));
 
     const payload = makePayload({
       tombstones: [{ entity: "note", id: "n1", deletedAt: T0 + 2_000, deviceId: "device-b" }],
@@ -538,6 +565,8 @@ describe("applyBackup — semantic vectors", () => {
     expect(counts.deleted).toBeGreaterThan(0);
     expect(await db.notes.get("n1")).toBeUndefined();
     expect(await db.noteEmbeddings.get("n1")).toBeUndefined();
+    // The chunk rows hold the note's plain text — none may outlive it.
+    expect(await chunksOf("n1")).toHaveLength(0);
   });
 
   it("replace restore drops vectors for vanished notes and for notes that arrive locked", async () => {
@@ -550,6 +579,9 @@ describe("applyBackup — semantic vectors", () => {
     await db.noteEmbeddings.put(vectorRowFor(staying));
     await db.noteEmbeddings.put(vectorRowFor(vanishing));
     await db.noteEmbeddings.put(vectorRowFor(locking));
+    await db.noteChunks.put(chunkRowFor(staying));
+    await db.noteChunks.put(chunkRowFor(vanishing));
+    await db.noteChunks.put(chunkRowFor(locking));
 
     const lockedCopy: Note = {
       ...locking,
@@ -568,6 +600,23 @@ describe("applyBackup — semantic vectors", () => {
     expect(await db.noteEmbeddings.get("staying")).toBeDefined();
     expect(await db.noteEmbeddings.get("vanishing")).toBeUndefined();
     expect(await db.noteEmbeddings.get("locking")).toBeUndefined();
+    expect(await chunksOf("staying")).toHaveLength(1);
+    expect(await chunksOf("vanishing")).toHaveLength(0);
+    expect(await chunksOf("locking")).toHaveLength(0);
+  });
+
+  it("the sync snapshot never carries chunk rows (local-only index data)", async () => {
+    const note = makeNote("n1");
+    await db.notes.put(note);
+    await db.noteChunks.put({
+      ...chunkRowFor(note),
+      text: "CHUNK-SENTINEL-TEXT",
+      contentHash: "cafebabe",
+    });
+    const snapshot = await collectLibrarySnapshot(asDb(db));
+    expect(JSON.stringify(snapshot)).not.toContain("CHUNK-SENTINEL-TEXT");
+    expect(JSON.stringify(snapshot)).not.toContain("noteChunks");
+    expect(JSON.stringify(snapshot)).not.toContain("cafebabe");
   });
 });
 

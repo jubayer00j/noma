@@ -5,8 +5,11 @@ import { buildBackupZip, collectBackup } from "./backup";
 import type { NomaDatabase } from "./db";
 import { searchNotes } from "./search";
 import {
+  CHUNK_MAX_CHARS,
+  CHUNK_OVERLAP_CHARS,
   EMBED_MAX_CHARS,
   buildIndex,
+  chunkNoteText,
   embedNoteIfIndexed,
   embeddedTextForNote,
   fnv1a,
@@ -25,6 +28,7 @@ import type {
   AttachmentMeta,
   Folder,
   Note,
+  NoteChunk,
   NoteEmbedding,
   Reminder,
   SyncTombstone,
@@ -133,6 +137,53 @@ class FakeEmbeddingTable {
   }
 }
 
+/** Stand-in for the v6 noteChunks table (keyed by id, indexed by noteId). */
+class FakeChunkTable {
+  rows = new Map<string, NoteChunk>();
+  async get(id: string): Promise<NoteChunk | undefined> {
+    const row = this.rows.get(id);
+    return row ? structuredClone(row) : undefined;
+  }
+  async put(row: NoteChunk): Promise<string> {
+    this.rows.set(row.id, structuredClone(row));
+    return row.id;
+  }
+  async bulkPut(rows: NoteChunk[]): Promise<void> {
+    for (const row of rows) this.rows.set(row.id, structuredClone(row));
+  }
+  async delete(id: string): Promise<void> {
+    this.rows.delete(id);
+  }
+  async bulkDelete(ids: string[]): Promise<void> {
+    for (const id of ids) this.rows.delete(id);
+  }
+  async clear(): Promise<void> {
+    this.rows.clear();
+  }
+  async count(): Promise<number> {
+    return this.rows.size;
+  }
+  async toArray(): Promise<NoteChunk[]> {
+    return [...this.rows.values()].map((row) => structuredClone(row));
+  }
+  where(field: string) {
+    const matches = (value: unknown) =>
+      [...this.rows.values()].filter(
+        (row) => (row as unknown as Record<string, unknown>)[field] === value,
+      );
+    return {
+      equals: (value: unknown) => ({
+        toArray: async () => matches(value).map((row) => structuredClone(row)),
+        delete: async () => {
+          const found = matches(value);
+          for (const row of found) this.rows.delete(row.id);
+          return found.length;
+        },
+      }),
+    };
+  }
+}
+
 class FakeDb {
   name = `noma_${OWNER}`;
   notes = new FakeTable<Note>();
@@ -144,6 +195,7 @@ class FakeDb {
   backups = new FakeTable<Row & { createdAt: number }>();
   tombstones = new FakeTable<SyncTombstone>();
   noteEmbeddings = new FakeEmbeddingTable();
+  noteChunks = new FakeChunkTable();
 
   async transaction(...args: unknown[]): Promise<void> {
     const fn = args[args.length - 1] as () => Promise<void>;
@@ -255,7 +307,8 @@ describe("semantic index lifecycle", () => {
       onProgress: (p) => progress.push(p.done),
     });
     expect(indexed).toBe(2);
-    expect(progress[progress.length - 1]).toBe(2);
+    // Progress counts notes and chunks together (2 notes + 2 chunks).
+    expect(progress[progress.length - 1]).toBe(4);
 
     const rows = await db.noteEmbeddings.toArray();
     expect(rows.map((r) => r.noteId).sort()).toEqual(["cats", "rain"]);
@@ -269,6 +322,8 @@ describe("semantic index lifecycle", () => {
       indexedCount: 2,
       staleCount: 0,
       embeddingModel: "gemini-embedding-001",
+      chunkCount: 2,
+      chunksStaleCount: 0,
     });
   });
 
@@ -279,6 +334,8 @@ describe("semantic index lifecycle", () => {
       indexedCount: 0,
       staleCount: 0,
       embeddingModel: null,
+      chunkCount: 0,
+      chunksStaleCount: 0,
     });
   });
 
@@ -363,13 +420,15 @@ describe("semantic index lifecycle", () => {
     );
   });
 
-  it("removeIndex wipes the table", async () => {
+  it("removeIndex wipes both index tables", async () => {
     stubEmbedFetch();
     const db = new FakeDb();
     await db.notes.put(baseNote({ id: "rain" }));
     await buildIndex(asDb(db), geminiTarget());
+    expect(await db.noteChunks.count()).toBeGreaterThan(0);
     await removeIndex(asDb(db));
     expect(await db.noteEmbeddings.count()).toBe(0);
+    expect(await db.noteChunks.count()).toBe(0);
   });
 });
 
@@ -497,6 +556,8 @@ describe("embedNoteIfIndexed / maintainSemanticIndexForNote", () => {
     });
     await embedNoteIfIndexed(asDb(db), locked, target);
     expect(await db.noteEmbeddings.get("rain")).toBeUndefined();
+    // The note's chunk rows — which hold its plain text — die with it.
+    expect(await db.noteChunks.where("noteId").equals("rain").toArray()).toEqual([]);
   });
 
   it("maintainSemanticIndexForNote resolves the owner from the database name", async () => {
@@ -529,6 +590,7 @@ describe("embedNoteIfIndexed / maintainSemanticIndexForNote", () => {
     await db.notes.put(baseNote({ id: "rain" }));
     await buildIndex(asDb(db), target);
     expect(await db.noteEmbeddings.count()).toBe(1);
+    expect(await db.noteChunks.count()).toBe(1);
 
     // The note is locked behind the save hook's back AND the AI record
     // is removed: the plaintext-derived vector is still dropped —
@@ -537,6 +599,7 @@ describe("embedNoteIfIndexed / maintainSemanticIndexForNote", () => {
     saveAiRecord(OWNER, null);
     await maintainSemanticIndexForNote(asDb(db), "rain");
     expect(await db.noteEmbeddings.get("rain")).toBeUndefined();
+    expect(await db.noteChunks.count()).toBe(0);
 
     // Same for a note deleted outright.
     await db.noteEmbeddings.put({
@@ -584,6 +647,22 @@ describe("invalidateNoteVector / invalidateMismatchedVectors", () => {
     await db.noteEmbeddings.put(rowFor(changedBefore));
     await db.noteEmbeddings.put(rowFor(locked));
     await db.noteEmbeddings.put(rowFor(baseNote({ id: "ghost" })));
+    // Chunk rows ride along with their note's vector row.
+    const chunkFor = (note: Note): NoteChunk => ({
+      id: `${note.id}#0`,
+      noteId: note.id,
+      chunkIndex: 0,
+      providerKey: key,
+      dims: 2,
+      vector: new Float32Array([1, 0]),
+      contentHash: fnv1a(embeddedTextForNote(note)),
+      text: embeddedTextForNote(note),
+      updatedAt: 1,
+    });
+    await db.noteChunks.put(chunkFor(keep));
+    await db.noteChunks.put(chunkFor(changedBefore));
+    await db.noteChunks.put(chunkFor(locked));
+    await db.noteChunks.put(chunkFor(baseNote({ id: "ghost" })));
 
     await invalidateMismatchedVectors(asDb(db), ["keep", "changed", "locked", "ghost"]);
 
@@ -591,10 +670,12 @@ describe("invalidateNoteVector / invalidateMismatchedVectors", () => {
     expect(await db.noteEmbeddings.get("changed")).toBeUndefined();
     expect(await db.noteEmbeddings.get("locked")).toBeUndefined();
     expect(await db.noteEmbeddings.get("ghost")).toBeUndefined();
+    const remainingChunks = await db.noteChunks.toArray();
+    expect(remainingChunks.map((row) => row.noteId)).toEqual(["keep"]);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("invalidateNoteVector deletes a single row and tolerates a missing one", async () => {
+  it("invalidateNoteVector deletes the vector row and the note's chunks, tolerating missing ones", async () => {
     const db = new FakeDb();
     await db.noteEmbeddings.put({
       noteId: "n1",
@@ -604,8 +685,20 @@ describe("invalidateNoteVector / invalidateMismatchedVectors", () => {
       contentHash: "abc123",
       updatedAt: 1,
     });
+    await db.noteChunks.put({
+      id: "n1#0",
+      noteId: "n1",
+      chunkIndex: 0,
+      providerKey: "gemini|native|gemini-embedding-001|2",
+      dims: 2,
+      vector: new Float32Array([1, 0]),
+      contentHash: "abc123",
+      text: "Some note text",
+      updatedAt: 1,
+    });
     await invalidateNoteVector(asDb(db), "n1");
     expect(await db.noteEmbeddings.get("n1")).toBeUndefined();
+    expect(await db.noteChunks.count()).toBe(0);
     await expect(invalidateNoteVector(asDb(db), "n1")).resolves.toBeUndefined();
   });
 });
@@ -724,13 +817,261 @@ describe("embeddings never leave the device", () => {
       updatedAt: 1,
     });
 
+    await db.noteChunks.put({
+      id: "sentinel#0",
+      noteId: "sentinel",
+      chunkIndex: 0,
+      providerKey: "gemini:SENTINEL-MODEL-XYZ:2",
+      dims: 2,
+      vector: new Float32Array([0.123456, 0.654321]),
+      contentHash: "cafebabe",
+      text: "CHUNK-SENTINEL-TEXT",
+      updatedAt: 1,
+    });
+
     const payload = await collectBackup(asDb(db), OWNER);
     expect(JSON.stringify(payload)).not.toContain("SENTINEL-MODEL-XYZ");
     expect(JSON.stringify(payload)).not.toContain("noteEmbeddings");
+    expect(JSON.stringify(payload)).not.toContain("noteChunks");
+    expect(JSON.stringify(payload)).not.toContain("CHUNK-SENTINEL-TEXT");
     expect(JSON.stringify(payload)).not.toContain("deadbeef");
 
     const { blob } = await buildBackupZip(asDb(db), OWNER);
     const rawText = new TextDecoder("latin1").decode(await blob.arrayBuffer());
     expect(rawText).not.toContain("SENTINEL-MODEL-XYZ");
+    expect(rawText).not.toContain("CHUNK-SENTINEL-TEXT");
+  });
+});
+
+/* ---------------- Chunking (Ask Noma) ---------------- */
+
+/** A sentence of exactly `length` chars: a marker word, filler, and a full stop. */
+function sentenceOf(marker: string, length: number): string {
+  const words = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor";
+  let text = marker;
+  while (text.length < length - 1) text += ` ${words}`;
+  return `${text.slice(0, length - 1)}.`;
+}
+
+/** Every text sent to the (fake) provider across the given fetch calls. */
+function embeddedTextsInCalls(calls: Array<{ body: string }>): string[] {
+  return calls.flatMap((call) => {
+    const parsed = JSON.parse(call.body) as {
+      requests?: Array<{ content: { parts: Array<{ text: string }> } }>;
+    };
+    return (parsed.requests ?? []).map((r) => r.content.parts[0]!.text);
+  });
+}
+
+describe("chunkNoteText", () => {
+  it("returns no chunks for an empty or whitespace-only note", () => {
+    expect(chunkNoteText(baseNote({ title: "", content: "" }))).toEqual([]);
+    expect(chunkNoteText(baseNote({ title: "", content: "<p>   </p>" }))).toEqual([]);
+  });
+
+  it("keeps a short note as a single chunk equal to its embedded text, title first", () => {
+    const note = baseNote({ title: "My Title", content: "<p>Hello world.</p>" });
+    const chunks = chunkNoteText(note);
+    expect(chunks).toEqual([embeddedTextForNote(note)]);
+    expect(chunks[0]!.startsWith("My Title")).toBe(true);
+  });
+
+  it("is deterministic — same note in, same chunks and stable hashes out", () => {
+    const content = `<p>${sentenceOf("Alpha", 300)} ${sentenceOf("Beta", 300)} ${sentenceOf("Gamma", 300)}</p>`;
+    const a = chunkNoteText(baseNote({ title: "Long", content }));
+    const b = chunkNoteText(baseNote({ title: "Long", content }));
+    expect(a.length).toBeGreaterThan(1);
+    expect(a).toEqual(b);
+    expect(a.map((chunk) => fnv1a(chunk))).toEqual(b.map((chunk) => fnv1a(chunk)));
+  });
+
+  it("breaks at sentence boundaries when sentences fit, packing them whole", () => {
+    const s1 = sentenceOf("One", 300);
+    const s2 = sentenceOf("Two", 300);
+    const s3 = sentenceOf("Three", 300);
+    const chunks = chunkNoteText(baseNote({ title: "", content: `<p>${s1} ${s2} ${s3}</p>` }));
+    expect(chunks).toHaveLength(2);
+    // The first chunk is the first two sentences, rejoined exactly.
+    expect(chunks[0]).toBe(`${s1} ${s2}`);
+    expect(chunks[0]!.endsWith(".")).toBe(true);
+    expect(chunks[1]).toContain(s3);
+  });
+
+  it("prefixes each later chunk with the previous chunk's tail (overlap)", () => {
+    const s1 = sentenceOf("One", 300);
+    const s2 = sentenceOf("Two", 300);
+    const s3 = sentenceOf("Three", 300);
+    const chunks = chunkNoteText(baseNote({ title: "", content: `<p>${s1} ${s2} ${s3}</p>` }));
+    const overlapLine = chunks[1]!.split("\n")[0]!;
+    expect(overlapLine.length).toBeGreaterThan(0);
+    expect(chunks[0]).toContain(overlapLine);
+    expect(chunks[1]!.length).toBeGreaterThan(s3.length);
+  });
+
+  it("hard-splits a run with no sentence boundaries, at the size cap", () => {
+    const words = Array.from({ length: 300 }, () => "word").join(" ");
+    const chunks = chunkNoteText(baseNote({ title: "", content: `<p>${words}</p>` }));
+    expect(chunks).toHaveLength(3);
+    // The first slice fills the cap (minus a trimmed trailing space).
+    expect(chunks[0]!.length).toBeGreaterThan(CHUNK_MAX_CHARS - 5);
+    expect(chunks[0]!.length).toBeLessThanOrEqual(CHUNK_MAX_CHARS);
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(CHUNK_MAX_CHARS + CHUNK_OVERLAP_CHARS + 1);
+    }
+  });
+
+  it("never chunks text past the EMBED_MAX_CHARS cap", () => {
+    const body = `${sentenceOf("Head", 500)} ${"filler ".repeat(1200)}ZZZTAILMARKER`;
+    const chunks = chunkNoteText(baseNote({ title: "Cap", content: `<p>${body}</p>` }));
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.length).toBeLessThanOrEqual(12);
+    expect(chunks.join("\n")).not.toContain("ZZZTAILMARKER");
+  });
+});
+
+/* ---------------- Chunk index lifecycle (Ask Noma) ---------------- */
+
+/** A note whose text runs to three chunks (title + five ~320-char sentences). */
+function longNote(id: string): Note {
+  const body = [0, 1, 2, 3, 4].map((i) => sentenceOf(`Part${i}`, 320)).join(" ");
+  return baseNote({ id, title: `Long ${id}`, content: `<p>${body}</p>` });
+}
+
+/** Like stubEmbedFetch, but aborts the controller during the Nth provider call. */
+function stubEmbedFetchAbortingAfter(controller: AbortController, abortOnCall: number): void {
+  let calls = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: unknown, init?: RequestInit) => {
+      calls++;
+      const body = String(init?.body ?? "");
+      const parsed = JSON.parse(body) as {
+        requests?: Array<{ content: { parts: Array<{ text: string }> } }>;
+      };
+      const texts = (parsed.requests ?? []).map((r) => r.content.parts[0]!.text);
+      if (calls >= abortOnCall) controller.abort();
+      return new Response(
+        JSON.stringify({ embeddings: texts.map((text) => ({ values: fakeVector(text) })) }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }),
+  );
+}
+
+describe("chunk index lifecycle", () => {
+  it("build stores chunk rows keyed noteId#index with text, hash and the note's providerKey", async () => {
+    stubEmbedFetch();
+    const db = new FakeDb();
+    const target = geminiTarget();
+    const note = baseNote({ id: "rain" });
+    await db.notes.put(note);
+    await buildIndex(asDb(db), target);
+
+    const chunks = await db.noteChunks.toArray();
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toMatchObject({
+      id: "rain#0",
+      noteId: "rain",
+      chunkIndex: 0,
+      text: embeddedTextForNote(note),
+      contentHash: fnv1a(embeddedTextForNote(note)),
+      providerKey: "gemini|native|gemini-embedding-001|2",
+      dims: 2,
+    });
+  });
+
+  it("a pre-chunk index reads chunks-pending; Update backfills chunks without re-embedding note vectors", async () => {
+    const { calls } = stubEmbedFetch();
+    const db = new FakeDb();
+    const target = geminiTarget();
+    await db.notes.put(baseNote({ id: "rain" }));
+    await db.notes.put(longNote("long"));
+    await buildIndex(asDb(db), target);
+    const chunkTotal = await db.noteChunks.count();
+    expect(chunkTotal).toBe(4);
+
+    // Simulate an index built before the chunk half existed.
+    await db.noteChunks.clear();
+    const before = await getIndexStatus(asDb(db), target);
+    expect(before.state).toBe("ready");
+    expect(before.staleCount).toBe(0);
+    expect(before.chunkCount).toBe(0);
+    expect(before.chunksStaleCount).toBe(2);
+
+    const callsBefore = calls.length;
+    const result = await reconcileIndex(asDb(db), target);
+    expect(result).toEqual({ embedded: 2, deleted: 0, unchanged: 0 });
+    // Only chunk texts went to the provider — no note text was resent,
+    // and every text sent is chunk-sized, never a whole long note.
+    const sent = embeddedTextsInCalls(calls.slice(callsBefore));
+    expect(sent).toHaveLength(chunkTotal);
+    expect(sent.every((text) => text.length <= CHUNK_MAX_CHARS + CHUNK_OVERLAP_CHARS + 1)).toBe(
+      true,
+    );
+
+    const after = await getIndexStatus(asDb(db), target);
+    expect(after.chunkCount).toBe(chunkTotal);
+    expect(after.chunksStaleCount).toBe(0);
+  });
+
+  it("reconcile re-chunks only the changed note; the other note's chunks are untouched", async () => {
+    const { calls } = stubEmbedFetch();
+    const db = new FakeDb();
+    const target = geminiTarget();
+    await db.notes.put(baseNote({ id: "rain" }));
+    await db.notes.put(longNote("long"));
+    await buildIndex(asDb(db), target);
+    const longHashesBefore = (await db.noteChunks.toArray())
+      .filter((row) => row.noteId === "long")
+      .map((row) => row.contentHash);
+
+    await db.notes.put(baseNote({ id: "rain", content: "<p>Rain, changed.</p>" }));
+    const callsBefore = calls.length;
+    const result = await reconcileIndex(asDb(db), target);
+    expect(result).toEqual({ embedded: 1, deleted: 0, unchanged: 1 });
+    const sent = embeddedTextsInCalls(calls.slice(callsBefore));
+    expect(sent).toHaveLength(2); // the changed note's vector + its single chunk
+    expect(sent.every((text) => text.includes("changed"))).toBe(true);
+    const longHashesAfter = (await db.noteChunks.toArray())
+      .filter((row) => row.noteId === "long")
+      .map((row) => row.contentHash);
+    expect(longHashesAfter).toEqual(longHashesBefore);
+  });
+
+  it("a build cancelled in the chunk phase keeps all vectors and reports every chunk pending", async () => {
+    const controller = new AbortController();
+    stubEmbedFetchAbortingAfter(controller, 2);
+    const db = new FakeDb();
+    const target = geminiTarget();
+    for (let i = 0; i < 30; i++) {
+      await db.notes.put(baseNote({ id: `n${i}`, title: `Note ${i}` }));
+    }
+    await expect(buildIndex(asDb(db), target, { signal: controller.signal })).rejects.toMatchObject(
+      { name: "AbortError" },
+    );
+    expect(await db.noteEmbeddings.count()).toBe(30);
+    expect(await db.noteChunks.count()).toBe(0);
+    const status = await getIndexStatus(asDb(db), target);
+    expect(status.state).toBe("ready");
+    expect(status.staleCount).toBe(0);
+    expect(status.chunksStaleCount).toBe(30);
+  });
+
+  it("embedNoteIfIndexed backfills a pre-chunk note's chunks on save, without re-embedding its vector", async () => {
+    const { calls } = stubEmbedFetch();
+    const db = new FakeDb();
+    const target = geminiTarget();
+    const note = longNote("long");
+    await db.notes.put(note);
+    await buildIndex(asDb(db), target);
+    await db.noteChunks.clear();
+
+    const callsBefore = calls.length;
+    await embedNoteIfIndexed(asDb(db), note, target);
+    expect(await db.noteChunks.count()).toBe(3);
+    const sent = embeddedTextsInCalls(calls.slice(callsBefore));
+    expect(sent).toHaveLength(3);
+    // The ~1,600-char whole-note vector text was never resent.
+    expect(sent.every((text) => text.length < 1000)).toBe(true);
   });
 });

@@ -179,11 +179,7 @@ export async function deleteNoteForever(db: NomaDatabase, id: string): Promise<v
 
   await db.transaction(
     "rw",
-    db.notes,
-    db.attachments,
-    db.reminders,
-    db.noteVersions,
-    db.noteEmbeddings,
+    [db.notes, db.attachments, db.reminders, db.noteVersions, db.noteEmbeddings, db.noteChunks],
     async () => {
       await db.attachments.where("noteId").equals(id).delete();
       await db.reminders.where("noteId").equals(id).delete();
@@ -191,8 +187,10 @@ export async function deleteNoteForever(db: NomaDatabase, id: string): Promise<v
       // (soft-delete/trash keeps history — a restored note keeps its past).
       await clearVersions(db, id);
       // The semantic vector is derived from the note's content and dies
-      // with it — no row may outlive the note (semantic.ts).
+      // with it — no row may outlive the note (semantic.ts). The Ask
+      // Noma chunk rows carry the note's plain text and die with it too.
       if (db.noteEmbeddings) await db.noteEmbeddings.delete(id);
+      if (db.noteChunks) await db.noteChunks.where("noteId").equals(id).delete();
       await db.notes.delete(id);
     },
   );

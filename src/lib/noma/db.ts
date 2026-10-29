@@ -7,6 +7,7 @@ import {
   type BackupRecord,
   type Folder,
   type Note,
+  type NoteChunk,
   type NoteEmbedding,
   type NoteVersion,
   type Reminder,
@@ -27,6 +28,7 @@ export class NomaDatabase extends Dexie {
   syncMeta!: Table<SyncState, string>;
   noteVersions!: Table<NoteVersion, string>;
   noteEmbeddings!: Table<NoteEmbedding, string>;
+  noteChunks!: Table<NoteChunk, string>;
 
   constructor(databaseName: string) {
     super(databaseName);
@@ -97,6 +99,27 @@ export class NomaDatabase extends Dexie {
       noteVersions: "id, noteId",
       noteEmbeddings: "noteId",
     });
+
+    // v6 — Chunk-level semantic index for Ask Noma: each note's text
+    // split into overlapping chunks with a vector per chunk (see
+    // semantic.ts). Same local-only status as the v5 note vectors:
+    // derived data, never part of backups or sync, and deliberately
+    // NOT copied by copyDatabase — each database/device builds its
+    // own chunks.
+    this.version(6).stores({
+      notes: "id, updatedAt, createdAt, folderId, pinned, favorite, archived, deleted, *tagIds",
+      folders: "id, name, parentId",
+      tags: "id, name",
+      attachments: "id, noteId",
+      settings: "id",
+      backups: "id, createdAt",
+      reminders: "id, noteId, scheduledAt, status, createdAt, updatedAt",
+      tombstones: "id, entity, deletedAt",
+      syncMeta: "id",
+      noteVersions: "id, noteId",
+      noteEmbeddings: "noteId",
+      noteChunks: "id, noteId",
+    });
   }
 }
 
@@ -128,10 +151,11 @@ export async function copyDatabase(source: NomaDatabase, target: NomaDatabase): 
   // Settings contains account-specific security controls (appLockEnabled, unlockMethods,
   // passwordHash, passwordSalt, patternHash, patternSalt, failedAttempts, lockoutUntil).
   // The destination database's existing security settings must remain authoritative.
-  // The same deliberate omission covers `noteVersions` and `noteEmbeddings`:
-  // both are local-only derived data (history snapshots, search vectors)
-  // that a destination database rebuilds for itself — see db versions
-  // v4/v5. The explicit table list below is what enforces all of this.
+  // The same deliberate omission covers `noteVersions`, `noteEmbeddings`
+  // and `noteChunks`: all are local-only derived data (history
+  // snapshots, search vectors, Ask Noma chunks) that a destination
+  // database rebuilds for itself — see db versions v4/v5/v6. The
+  // explicit table list below is what enforces all of this.
   const [notes, folders, tags, attachments, backups, reminders] = await Promise.all([
     source.notes.toArray(),
     source.folders.toArray(),

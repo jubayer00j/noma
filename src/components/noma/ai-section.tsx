@@ -653,7 +653,7 @@ export function AiSection({ ownerId, db }: { ownerId: string | null; db: NomaDat
                 {db && indexStatus && (
                   <p className="text-sm text-muted-foreground" role="status">
                     {indexStatus.state === "not-built" &&
-                      `No search index yet. Building one sends each note's text to ${providerName} once, under your key, and keeps only the resulting vectors on this device.`}
+                      `No search index yet. Building one sends each note's text to ${providerName} under your key — once per note, and again in small overlapping chunks for Ask Noma — and keeps only the resulting vectors on this device.`}
                     {indexStatus.state === "invalid-provider" &&
                       `The index on this device was built with ${indexStatus.embeddingModel ?? "a different embedding model"} — rebuild it to use semantic search with the current provider. Search stays keyword-only until then.`}
                     {indexStatus.state === "ready" &&
@@ -661,6 +661,10 @@ export function AiSection({ ownerId, db }: { ownerId: string | null; db: NomaDat
                         indexStatus.staleCount > 0
                           ? `${indexStatus.staleCount} changed since`
                           : "up to date"
+                      }${
+                        indexStatus.chunksStaleCount > 0
+                          ? ` · Ask Noma chunks pending for ${indexStatus.chunksStaleCount} note${indexStatus.chunksStaleCount === 1 ? "" : "s"} — Update index adds them`
+                          : ""
                       }`}
                   </p>
                 )}

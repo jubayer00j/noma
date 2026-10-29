@@ -10,7 +10,7 @@ import type { NomaDatabase } from "./db";
 import { notePreviewText } from "./note-export";
 import { htmlToPlainText } from "./sanitize";
 import type { SearchResult } from "./search";
-import type { Note, NoteEmbedding } from "./types";
+import type { Note, NoteChunk, NoteEmbedding } from "./types";
 
 /**
  * Semantic search (#8.5) — a meaning-based layer over the existing
@@ -32,6 +32,14 @@ import type { Note, NoteEmbedding } from "./types";
  *   and from copyDatabase by its explicit table list). A provider,
  *   endpoint or embedding-model change invalidates the index — vectors
  *   from two embedding spaces are never mixed or compared.
+ *
+ * Ask Noma (chunk index) — alongside the per-note vectors, each note's
+ * text is also split into overlapping chunks with a vector per chunk
+ * (Dexie v6 `noteChunks`), fine-grained enough for grounded answers
+ * with passage-level citations. The chunk half obeys every rule above:
+ * same eligibility, same providerKey identity, same local-only status,
+ * and it is built, reconciled, maintained and invalidated in the SAME
+ * pass as the note vectors — one Build/Update action maintains both.
  *
  * Any failure in this layer (offline, quota, bad key) degrades search
  * to keyword-only; searchNotes itself is untouched.
@@ -105,6 +113,155 @@ function desiredEmbeddings(notes: Note[]): Map<string, { text: string; hash: str
   return out;
 }
 
+/* ---------------- Chunking (Ask Noma) ---------------- */
+
+/** Target size of one chunk, in characters. */
+export const CHUNK_MAX_CHARS = 700;
+/** How much of the previous chunk's tail each chunk repeats, in characters. */
+export const CHUNK_OVERLAP_CHARS = 100;
+
+/**
+ * One piece of a text being chunked: the piece itself plus the joiner
+ * that belongs in front of it when it is appended to a non-empty
+ * chunk — "\n" across a paragraph break, " " across a sentence
+ * break, "" across a hard split — so a packed chunk reads like the
+ * original text instead of a re-glued one.
+ */
+interface ChunkSegment {
+  text: string;
+  joiner: string;
+}
+
+/**
+ * Breaks a text into segments no longer than CHUNK_MAX_CHARS,
+ * preferring coarse boundaries: paragraphs first; a paragraph that is
+ * still too long falls to sentences; a sentence that is still too
+ * long is hard-split. Sentence ends include the Bengali danda (।)
+ * alongside Latin punctuation. (In practice the plain-text extractor
+ * collapses a note body to a single space-joined line, so the title
+ * break is the one paragraph boundary most notes have — sentences do
+ * the real work.)
+ */
+function chunkSegments(text: string): ChunkSegment[] {
+  const segments: ChunkSegment[] = [];
+  const push = (piece: string, joiner: string) => {
+    const trimmed = piece.trim();
+    if (trimmed) segments.push({ text: trimmed, joiner });
+  };
+  for (const paragraph of text.split(/\n+/)) {
+    if (!paragraph.trim()) continue;
+    if (paragraph.length <= CHUNK_MAX_CHARS) {
+      push(paragraph, "\n");
+      continue;
+    }
+    let firstSentence = true;
+    for (const sentence of paragraph.split(/(?<=[.!?…।])\s+/)) {
+      if (sentence.length <= CHUNK_MAX_CHARS) {
+        push(sentence, firstSentence ? "\n" : " ");
+        firstSentence = false;
+        continue;
+      }
+      for (let i = 0; i < sentence.length; i += CHUNK_MAX_CHARS) {
+        push(sentence.slice(i, i + CHUNK_MAX_CHARS), i === 0 ? (firstSentence ? "\n" : " ") : "");
+      }
+      firstSentence = false;
+    }
+  }
+  return segments;
+}
+
+/**
+ * The chunks a note is indexed as for Ask Noma: the same text
+ * `embeddedTextForNote` produces (title first, EMBED_MAX_CHARS cap),
+ * packed from boundary-respecting segments into ~CHUNK_MAX_CHARS
+ * chunks, each after the first prefixed with the previous chunk's
+ * tail (snapped forward to a word boundary) so a passage that
+ * straddles a boundary survives whole in one chunk or the other.
+ * Deterministic: identical text → identical chunks → stable content
+ * hashes. An empty/whitespace note yields zero chunks.
+ */
+export function chunkNoteText(note: Pick<Note, "title" | "content">): string[] {
+  const text = embeddedTextForNote(note);
+  if (!text.trim()) return [];
+  const segments = chunkSegments(text);
+
+  const base: string[] = [];
+  let current = "";
+  for (const segment of segments) {
+    if (!current) {
+      current = segment.text;
+      continue;
+    }
+    const candidate = `${current}${segment.joiner}${segment.text}`;
+    if (candidate.length <= CHUNK_MAX_CHARS) {
+      current = candidate;
+    } else {
+      base.push(current);
+      current = segment.text;
+    }
+  }
+  if (current) base.push(current);
+
+  return base.map((chunk, index) => {
+    if (index === 0) return chunk;
+    const previous = base[index - 1]!;
+    const tail = previous.slice(-CHUNK_OVERLAP_CHARS);
+    const boundary = tail.search(/\s/);
+    const overlap = boundary >= 0 ? tail.slice(boundary).trim() : "";
+    return overlap ? `${overlap}\n${chunk}` : chunk;
+  });
+}
+
+/** One note's wanted chunks: index, exact text, and its content hash. */
+export interface DesiredChunk {
+  index: number;
+  text: string;
+  hash: string;
+}
+
+/** noteId → the chunks the index should hold (same eligible, non-empty notes as desiredEmbeddings). */
+function desiredChunks(notes: Note[]): Map<string, DesiredChunk[]> {
+  const out = new Map<string, DesiredChunk[]>();
+  for (const note of notes) {
+    if (!noteEligibleForAi(note)) continue;
+    const chunks = chunkNoteText(note);
+    if (chunks.length === 0) continue;
+    out.set(
+      note.id,
+      chunks.map((text, index) => ({ index, text, hash: fnv1a(text) })),
+    );
+  }
+  return out;
+}
+
+/**
+ * A comparable signature of one note's chunk set: "index:hash" pairs
+ * in chunk order. Stored rows and wanted chunks are current for each
+ * other exactly when their signatures are equal.
+ */
+function chunkSignature(chunks: Array<{ index: number; hash: string }>): string {
+  return [...chunks]
+    .sort((a, b) => a.index - b.index)
+    .map((chunk) => `${chunk.index}:${chunk.hash}`)
+    .join(",");
+}
+
+function storedChunkSignature(rows: NoteChunk[]): string {
+  return chunkSignature(rows.map((row) => ({ index: row.chunkIndex, hash: row.contentHash })));
+}
+
+/** The chunks table, or null on a database that predates v6 (defensive, like the noteEmbeddings guards). */
+function chunkTable(db: NomaDatabase): NomaDatabase["noteChunks"] | null {
+  return db.noteChunks ?? null;
+}
+
+/** Deletes every chunk row of one note. No provider call. */
+async function deleteNoteChunks(db: NomaDatabase, noteId: string): Promise<void> {
+  const table = chunkTable(db);
+  if (!table) return;
+  await table.where("noteId").equals(noteId).delete();
+}
+
 /* ---------------- Index lifecycle ---------------- */
 
 export interface IndexProgress {
@@ -165,12 +322,84 @@ async function embedAndStore(
   }
 }
 
+/** A flattened chunk waiting to be embedded: which note, which chunk, what text. */
+interface ChunkEmbedItem {
+  noteId: string;
+  index: number;
+  text: string;
+  hash: string;
+}
+
 /**
- * Full (re)build: wipes the table first — a rebuild never mixes
- * vectors from a previous provider/model — then embeds every eligible
- * note. Cancelling mid-build leaves the notes embedded so far in
- * place; the status then honestly reports the rest as stale, and
- * Update completes the job.
+ * Embeds the given notes' chunks in groups and stores their rows —
+ * the chunk-level twin of embedAndStore, with the same rules: one
+ * dimension across a run, abort checked per group, and a cancel
+ * leaves the chunks stored so far in place as a valid partial index.
+ * Callers delete a note's old chunk rows before re-embedding them.
+ */
+async function embedChunksAndStore(
+  db: NomaDatabase,
+  target: AiEmbeddingTarget,
+  items: ChunkEmbedItem[],
+  options: BuildOptions = {},
+): Promise<void> {
+  const table = chunkTable(db);
+  if (!table || items.length === 0) return;
+  let dims: number | null = null;
+  let done = 0;
+  for (let i = 0; i < items.length; i += EMBED_GROUP_SIZE) {
+    if (options.signal?.aborted) throw abortError();
+    const group = items.slice(i, i + EMBED_GROUP_SIZE);
+    const vectors = await embedTexts(
+      embeddingSettings(target),
+      group.map((item) => item.text),
+      "document",
+    );
+    if (vectors.length !== group.length) throw new AiError("bad-response");
+    const now = Date.now();
+    const rows: NoteChunk[] = group.map((item, index) => {
+      const vector = vectors[index]!;
+      if (dims === null) dims = vector.length;
+      else if (vector.length !== dims) throw new AiError("bad-response");
+      return {
+        id: `${item.noteId}#${item.index}`,
+        noteId: item.noteId,
+        chunkIndex: item.index,
+        providerKey: providerKeyFor(target, vector.length),
+        dims: vector.length,
+        vector,
+        contentHash: item.hash,
+        text: item.text,
+        updatedAt: now,
+      };
+    });
+    await table.bulkPut(rows);
+    done += group.length;
+    options.onProgress?.({ done, total: items.length });
+  }
+}
+
+/** Flattens wanted chunks for the given notes into embed items, in note order. */
+function chunkEmbedItems(
+  wanted: Map<string, DesiredChunk[]>,
+  noteIds: Iterable<string>,
+): ChunkEmbedItem[] {
+  const items: ChunkEmbedItem[] = [];
+  for (const noteId of noteIds) {
+    for (const chunk of wanted.get(noteId) ?? []) {
+      items.push({ noteId, index: chunk.index, text: chunk.text, hash: chunk.hash });
+    }
+  }
+  return items;
+}
+
+/**
+ * Full (re)build: wipes both index tables first — a rebuild never
+ * mixes vectors from a previous provider/model — then embeds every
+ * eligible note, first its note vector, then its chunks. Cancelling
+ * mid-build leaves the notes embedded so far in place; the status
+ * then honestly reports the rest as stale, and Update completes
+ * the job.
  */
 export async function buildIndex(
   db: NomaDatabase,
@@ -179,10 +408,23 @@ export async function buildIndex(
 ): Promise<{ indexed: number }> {
   const notes = await db.notes.toArray();
   const desired = desiredEmbeddings(notes);
+  const wantedChunks = desiredChunks(notes);
   await db.noteEmbeddings.clear();
+  await chunkTable(db)?.clear();
   const entries = [...desired.entries()];
-  options.onProgress?.({ done: 0, total: entries.length });
-  await embedAndStore(db, target, entries, options);
+  const chunkItems = chunkEmbedItems(wantedChunks, desired.keys());
+  // Progress counts notes and chunks together: the build is done when
+  // both halves of the index are stored.
+  const total = entries.length + chunkItems.length;
+  options.onProgress?.({ done: 0, total });
+  await embedAndStore(db, target, entries, {
+    ...options,
+    onProgress: (p) => options.onProgress?.({ done: p.done, total }),
+  });
+  await embedChunksAndStore(db, target, chunkItems, {
+    ...options,
+    onProgress: (p) => options.onProgress?.({ done: entries.length + p.done, total }),
+  });
   return { indexed: entries.length };
 }
 
@@ -191,7 +433,13 @@ export async function buildIndex(
  * that are gone or no longer eligible (deleted, locked, trashed,
  * templated), and drops any row written by a different provider/model
  * (re-embedding it under the current one when the note still wants a
- * vector). Returns what it did, for the Settings status line.
+ * vector). The chunk half reconciles in the same pass, per note: a
+ * note whose chunks are missing or stale — including every note in a
+ * pre-chunk index, whose vectors reconcile as unchanged while their
+ * chunks backfill — is re-chunked and re-embedded; an unchanged note
+ * costs no provider call at all. Returns per-note counts (a note
+ * counts once, for whichever half did the work), for the Settings
+ * status line.
  */
 export async function reconcileIndex(
   db: NomaDatabase,
@@ -199,36 +447,66 @@ export async function reconcileIndex(
 ): Promise<{ embedded: number; deleted: number; unchanged: number }> {
   const notes = await db.notes.toArray();
   const desired = desiredEmbeddings(notes);
-  const rows = await db.noteEmbeddings.toArray();
+  const wantedChunks = desiredChunks(notes);
   const prefix = identityPrefix(target);
-  const byId = new Map(rows.map((row) => [row.noteId, row]));
 
-  const toDelete: string[] = [];
-  for (const row of rows) {
-    if (!desired.has(row.noteId) || !row.providerKey.startsWith(prefix)) {
-      toDelete.push(row.noteId);
-    }
+  const rows = await db.noteEmbeddings.toArray();
+  const vectorById = new Map(rows.map((row) => [row.noteId, row]));
+  const chunkRows = (await chunkTable(db)?.toArray()) ?? [];
+  const chunksByNote = new Map<string, NoteChunk[]>();
+  for (const row of chunkRows) {
+    const list = chunksByNote.get(row.noteId);
+    if (list) list.push(row);
+    else chunksByNote.set(row.noteId, [row]);
   }
 
-  const toEmbed: Array<[string, { text: string; hash: string }]> = [];
+  let embedded = 0;
+  let deleted = 0;
   let unchanged = 0;
-  for (const [noteId, want] of desired) {
-    const row = byId.get(noteId);
-    if (row && row.providerKey.startsWith(prefix) && row.contentHash === want.hash) {
-      unchanged++;
-    } else {
-      toEmbed.push([noteId, want]);
-    }
+
+  // Notes the index holds rows for but no longer wants: drop both halves.
+  const storedIds = new Set([...vectorById.keys(), ...chunksByNote.keys()]);
+  for (const noteId of storedIds) {
+    if (desired.has(noteId)) continue;
+    if (vectorById.has(noteId)) await db.noteEmbeddings.delete(noteId);
+    if (chunksByNote.has(noteId)) await deleteNoteChunks(db, noteId);
+    deleted++;
   }
 
-  if (toDelete.length) await db.noteEmbeddings.bulkDelete(toDelete);
-  await embedAndStore(db, target, toEmbed);
-  return { embedded: toEmbed.length, deleted: toDelete.length, unchanged };
+  const vectorsToEmbed: Array<[string, { text: string; hash: string }]> = [];
+  const chunksToEmbed: ChunkEmbedItem[] = [];
+  for (const [noteId, want] of desired) {
+    const row = vectorById.get(noteId);
+    const vectorOk = !!row && row.providerKey.startsWith(prefix) && row.contentHash === want.hash;
+    if (!vectorOk) vectorsToEmbed.push([noteId, want]);
+
+    const stored = (chunksByNote.get(noteId) ?? []).filter((chunk) =>
+      chunk.providerKey.startsWith(prefix),
+    );
+    const wanted = wantedChunks.get(noteId) ?? [];
+    const chunksOk =
+      stored.length === (chunksByNote.get(noteId) ?? []).length &&
+      storedChunkSignature(stored) === chunkSignature(wanted);
+    if (!chunksOk) {
+      // Re-chunking replaces the note's chunk rows wholesale: drop the
+      // old (or foreign-provider) rows first, then embed the wanted set.
+      if ((chunksByNote.get(noteId) ?? []).length) await deleteNoteChunks(db, noteId);
+      chunksToEmbed.push(...chunkEmbedItems(wantedChunks, [noteId]));
+    }
+
+    if (vectorOk && chunksOk) unchanged++;
+    else embedded++;
+  }
+
+  await embedAndStore(db, target, vectorsToEmbed);
+  await embedChunksAndStore(db, target, chunksToEmbed);
+  return { embedded, deleted, unchanged };
 }
 
-/** Remove the whole index — search returns to keyword-only. */
+/** Remove the whole index — search returns to keyword-only and Ask Noma has nothing to read. */
 export async function removeIndex(db: NomaDatabase): Promise<void> {
   await db.noteEmbeddings.clear();
+  await chunkTable(db)?.clear();
 }
 
 /* ---------------- Status ---------------- */
@@ -241,6 +519,14 @@ export interface SemanticIndexStatus {
   staleCount: number;
   /** The embedding model the stored vectors were built with, when an index exists. */
   embeddingModel: string | null;
+  /** Chunk rows currently stored (any provider). */
+  chunkCount: number;
+  /**
+   * Indexed notes whose Ask Noma chunks are missing or stale — an
+   * index built before the chunk half existed reports every indexed
+   * note here until Update backfills it. Ready state only.
+   */
+  chunksStaleCount: number;
 }
 
 function modelFromProviderKey(providerKey: string): string | null {
@@ -255,25 +541,40 @@ function modelFromProviderKey(providerKey: string): string | null {
  * current provider/model (or no usable target at all — AI off, key
  * removed, a no-embeddings provider) → invalid-provider: the semantic
  * layer stays off until a rebuild. Otherwise ready, with a stale
- * count so the user can see when Update has work to do.
+ * count so the user can see when Update has work to do. The chunk
+ * half is reported alongside: chunk rows count, and how many indexed
+ * notes still need their chunks built or refreshed for Ask Noma.
  */
 export async function getIndexStatus(
   db: NomaDatabase,
   target: AiEmbeddingTarget | null,
 ): Promise<SemanticIndexStatus> {
   const rows = await db.noteEmbeddings.toArray();
+  const chunkRows = (await chunkTable(db)?.toArray()) ?? [];
   if (rows.length === 0) {
-    return { state: "not-built", indexedCount: 0, staleCount: 0, embeddingModel: null };
+    return {
+      state: "not-built",
+      indexedCount: 0,
+      staleCount: 0,
+      embeddingModel: null,
+      chunkCount: chunkRows.length,
+      chunksStaleCount: 0,
+    };
   }
   const embeddingModel = modelFromProviderKey(rows[0]!.providerKey);
   const prefix = target ? identityPrefix(target) : null;
-  const valid = prefix !== null && rows.every((row) => row.providerKey.startsWith(prefix));
+  const valid =
+    prefix !== null &&
+    rows.every((row) => row.providerKey.startsWith(prefix)) &&
+    chunkRows.every((row) => row.providerKey.startsWith(prefix));
   if (!valid) {
     return {
       state: "invalid-provider",
       indexedCount: rows.length,
       staleCount: 0,
       embeddingModel,
+      chunkCount: chunkRows.length,
+      chunksStaleCount: 0,
     };
   }
   const notes = await db.notes.toArray();
@@ -287,7 +588,34 @@ export async function getIndexStatus(
   for (const row of rows) {
     if (!desired.has(row.noteId)) stale++;
   }
-  return { state: "ready", indexedCount: rows.length, staleCount: stale, embeddingModel };
+  // The chunk half of the staleness story: an indexed note whose
+  // chunk set doesn't match what its current text wants (missing
+  // entirely in a pre-chunk index, or stale after an edit), plus
+  // chunk rows that belong to no indexed note.
+  const wantedChunks = desiredChunks(notes);
+  const chunksByNote = new Map<string, NoteChunk[]>();
+  for (const row of chunkRows) {
+    const list = chunksByNote.get(row.noteId);
+    if (list) list.push(row);
+    else chunksByNote.set(row.noteId, [row]);
+  }
+  let chunksStale = 0;
+  for (const [noteId, wanted] of wantedChunks) {
+    if (storedChunkSignature(chunksByNote.get(noteId) ?? []) !== chunkSignature(wanted)) {
+      chunksStale++;
+    }
+  }
+  for (const noteId of chunksByNote.keys()) {
+    if (!wantedChunks.has(noteId)) chunksStale++;
+  }
+  return {
+    state: "ready",
+    indexedCount: rows.length,
+    staleCount: stale,
+    embeddingModel,
+    chunkCount: chunkRows.length,
+    chunksStaleCount: chunksStale,
+  };
 }
 
 /* ---------------- Vector invalidation (direct-write paths) ----------------
@@ -295,25 +623,32 @@ export async function getIndexStatus(
  * hook: note locking/unlocking (note-lock.ts), version restores
  * (versions.ts), permanent deletion, backup restore / sync merge
  * (backup.ts) and imports (importers.ts). The invariant they must all
- * preserve: a locked, template or trashed note NEVER has a vector at
- * rest, and a vector never claims content its note doesn't currently
- * have. The helpers here are LOCAL-ONLY — they delete rows and never
+ * preserve: a locked, template or trashed note NEVER has a vector —
+ * note-level or chunk — at rest, and a stored row never claims
+ * content its note doesn't currently have. (Chunk rows carry the
+ * note's plain text, so the invariant matters even more for them.)
+ * The helpers here are LOCAL-ONLY — they delete rows and never
  * call the provider; re-embedding stays inside user flows (a save, an
  * unlock, Build/Update), so a mismatch simply reads as stale until
  * then. */
 
-/** Deletes one note's vector row, if one exists. No provider call. */
+/** Deletes one note's vector row AND its chunk rows, if any exist. No provider call. */
 export async function invalidateNoteVector(db: NomaDatabase, noteId: string): Promise<void> {
   if (!db.noteEmbeddings) return;
   await db.noteEmbeddings.delete(noteId);
+  await deleteNoteChunks(db, noteId);
 }
 
 /**
- * Deletes the vector rows of the given notes wherever a row no longer
+ * Deletes the index rows of the given notes wherever a row no longer
  * tells the truth: the note is gone, no longer eligible (locked,
- * template, trashed), emptied, or its stored contentHash doesn't match
- * the hash of the note's current embedded text. Eligible notes whose
- * rows still match are kept untouched.
+ * template, trashed), emptied, or its stored contentHash doesn't
+ * match the hash of the note's current embedded text. A note whose
+ * vector row is deleted loses its chunk rows with it — chunks derive
+ * from the same text, so a stale vector means stale chunks. Eligible
+ * notes whose rows still match are kept untouched (a note whose
+ * chunks were never built is NOT a mismatch — that is the status
+ * backfill case, repaired by Update, not by deletion).
  */
 export async function invalidateMismatchedVectors(
   db: NomaDatabase,
@@ -326,11 +661,13 @@ export async function invalidateMismatchedVectors(
     const note = await db.notes.get(noteId);
     if (!note || !noteEligibleForAi(note)) {
       await db.noteEmbeddings.delete(noteId);
+      await deleteNoteChunks(db, noteId);
       continue;
     }
     const text = embeddedTextForNote(note);
     if (!text.trim() || row.contentHash !== fnv1a(text)) {
       await db.noteEmbeddings.delete(noteId);
+      await deleteNoteChunks(db, noteId);
     }
   }
 }
@@ -338,12 +675,16 @@ export async function invalidateMismatchedVectors(
 /* ---------------- Save-time maintenance ---------------- */
 
 /**
- * Keeps one note's vector current after a save — but only when a
- * valid index already exists (the user's build was the opt-in; this
- * never creates an index, never writes into a different provider's
- * space). An ineligible or emptied note loses its vector. Failures
- * propagate to the caller; the notes.ts hook swallows them, and any
- * miss shows up in the stale count for Update to repair.
+ * Keeps one note's vector — and its chunks — current after a save,
+ * but only when a valid index already exists (the user's build was
+ * the opt-in; this never creates an index, never writes into a
+ * different provider's space). An ineligible or emptied note loses
+ * both halves. A note whose vector is already current but whose
+ * chunks are missing (an index built before chunks existed) or stale
+ * gets just its chunks embedded — one note's worth, inside the save
+ * flow the user already triggered. Failures propagate to the caller;
+ * the notes.ts hook swallows them, and any miss shows up in the stale
+ * counts for Update to repair.
  */
 export async function embedNoteIfIndexed(
   db: NomaDatabase,
@@ -355,29 +696,47 @@ export async function embedNoteIfIndexed(
   if (rows.length === 0) return;
   const prefix = identityPrefix(target);
   if (!rows.every((row) => row.providerKey.startsWith(prefix))) return;
+  const table = chunkTable(db);
+  const chunkRows = table ? await table.toArray() : [];
+  if (!chunkRows.every((row) => row.providerKey.startsWith(prefix))) return;
 
   if (!noteEligibleForAi(note)) {
     await db.noteEmbeddings.delete(note.id);
+    await deleteNoteChunks(db, note.id);
     return;
   }
   const text = embeddedTextForNote(note);
   if (!text.trim()) {
     await db.noteEmbeddings.delete(note.id);
+    await deleteNoteChunks(db, note.id);
     return;
   }
   const hash = fnv1a(text);
   const existing = rows.find((row) => row.noteId === note.id);
-  if (existing && existing.contentHash === hash) return;
-  const [vector] = await embedTexts(embeddingSettings(target), [text], "document");
-  if (!vector) throw new AiError("bad-response");
-  await db.noteEmbeddings.put({
-    noteId: note.id,
-    providerKey: providerKeyFor(target, vector.length),
-    dims: vector.length,
-    vector,
-    contentHash: hash,
-    updatedAt: Date.now(),
-  });
+  if (!existing || existing.contentHash !== hash) {
+    const [vector] = await embedTexts(embeddingSettings(target), [text], "document");
+    if (!vector) throw new AiError("bad-response");
+    await db.noteEmbeddings.put({
+      noteId: note.id,
+      providerKey: providerKeyFor(target, vector.length),
+      dims: vector.length,
+      vector,
+      contentHash: hash,
+      updatedAt: Date.now(),
+    });
+  }
+
+  // The chunk half: current exactly when the stored rows are the
+  // wanted chunks under the current provider identity.
+  const wanted = desiredChunks([note]).get(note.id) ?? [];
+  const stored = chunkRows.filter((row) => row.noteId === note.id);
+  const chunksCurrent =
+    stored.every((row) => row.providerKey.startsWith(prefix)) &&
+    storedChunkSignature(stored) === chunkSignature(wanted);
+  if (!chunksCurrent) {
+    await deleteNoteChunks(db, note.id);
+    await embedChunksAndStore(db, target, chunkEmbedItems(new Map([[note.id, wanted]]), [note.id]));
+  }
 }
 
 /**
@@ -397,17 +756,17 @@ function ownerIdForDatabaseName(name: string | undefined): string | null | undef
 /**
  * The notes.ts save hook (also used by versions.ts restores and
  * note-lock.ts unlocks), kept here so callers stay thin: refreshes one
- * note's vector after a write. Best-effort by design — every failure
- * is swallowed, because a save must never fail over a search index;
- * Update index repairs anything this misses. Does nothing when no
- * index exists.
+ * note's vector and chunks after a write. Best-effort by design —
+ * every failure is swallowed, because a save must never fail over a
+ * search index; Update index repairs anything this misses. Does
+ * nothing when no index exists.
  *
  * The truth enforcement runs FIRST and needs no provider target at
  * all: a gone, ineligible (locked/template/trashed) or emptied note
- * loses its vector locally, even when AI is off or the key was
- * removed — a plaintext-derived vector must never outlive the state
- * that made its note unembeddable. Only the re-embed of an eligible
- * note waits for a resolvable target.
+ * loses its vector and its chunks locally, even when AI is off or the
+ * key was removed — plaintext-derived rows must never outlive the
+ * state that made their note unembeddable. Only the re-embed of an
+ * eligible note waits for a resolvable target.
  */
 export async function maintainSemanticIndexForNote(
   db: NomaDatabase,
@@ -415,10 +774,12 @@ export async function maintainSemanticIndexForNote(
 ): Promise<void> {
   try {
     if (!db.noteEmbeddings) return;
-    if ((await db.noteEmbeddings.count()) === 0) return;
+    const chunkCount = (await chunkTable(db)?.count()) ?? 0;
+    if ((await db.noteEmbeddings.count()) === 0 && chunkCount === 0) return;
     const note = await db.notes.get(noteId);
     if (!note || !noteEligibleForAi(note) || !embeddedTextForNote(note).trim()) {
       await db.noteEmbeddings.delete(noteId);
+      await deleteNoteChunks(db, noteId);
       return;
     }
     const ownerId = ownerIdForDatabaseName(db.name);

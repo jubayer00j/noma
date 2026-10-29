@@ -16,7 +16,7 @@ import {
 } from "./note-lock-crypto";
 import { notePreview } from "./notes";
 import { searchNotes } from "./search";
-import type { AttachmentMeta, Note, NoteEmbedding } from "./types";
+import type { AttachmentMeta, Note, NoteChunk, NoteEmbedding } from "./types";
 
 /* ---------------- Minimal in-memory stand-ins for the Dexie tables ---------------- */
 
@@ -68,15 +68,51 @@ class FakeEmbeddingTable {
   }
 }
 
+/** Stand-in for the v6 noteChunks table (keyed by id, indexed by noteId). */
+class FakeChunkTable {
+  rows = new Map<string, NoteChunk>();
+  async get(id: string): Promise<NoteChunk | undefined> {
+    return this.rows.get(id);
+  }
+  async put(row: NoteChunk): Promise<string> {
+    this.rows.set(row.id, row);
+    return row.id;
+  }
+  async toArray(): Promise<NoteChunk[]> {
+    return [...this.rows.values()];
+  }
+  async count(): Promise<number> {
+    return this.rows.size;
+  }
+  where(field: string) {
+    const matches = (value: unknown) =>
+      [...this.rows.values()].filter(
+        (r) => (r as unknown as Record<string, unknown>)[field] === value,
+      );
+    return {
+      equals: (value: unknown) => ({
+        toArray: async () => matches(value),
+        delete: async () => {
+          const found = matches(value);
+          for (const row of found) this.rows.delete(row.id);
+          return found.length;
+        },
+      }),
+    };
+  }
+}
+
 function makeDb() {
   const notes = new FakeTable<Note>();
   const attachments = new FakeTable<AttachmentMeta>();
   const noteEmbeddings = new FakeEmbeddingTable();
+  const noteChunks = new FakeChunkTable();
   return {
     notes,
     attachments,
     noteEmbeddings,
-    db: { notes, attachments, noteEmbeddings } as unknown as NomaDatabase,
+    noteChunks,
+    db: { notes, attachments, noteEmbeddings, noteChunks } as unknown as NomaDatabase,
   };
 }
 
@@ -241,6 +277,18 @@ describe("note-lock semantic vectors", () => {
     updatedAt: 1,
   };
 
+  const CHUNK_ROW: NoteChunk = {
+    id: "note-1#0",
+    noteId: "note-1",
+    chunkIndex: 0,
+    providerKey: "gemini|native|gemini-embedding-001|2",
+    dims: 2,
+    vector: new Float32Array([1, 0]),
+    contentHash: "abc123",
+    text: "Bank details\nAccount 12345678",
+    updatedAt: 1,
+  };
+
   it("lockNote deletes the note's stored vector — nothing plaintext-derived survives the seal", async () => {
     const { db, notes, attachments, noteEmbeddings } = makeDb();
     await notes.put(makeNote());
@@ -252,6 +300,18 @@ describe("note-lock semantic vectors", () => {
     expect(locked.lock).not.toBeNull();
     expect(isEncryptedContent(locked.content)).toBe(true);
     expect(await noteEmbeddings.get("note-1")).toBeUndefined();
+  });
+
+  it("lockNote deletes the note's Ask Noma chunks too — they hold the note's plain text", async () => {
+    const { db, notes, attachments, noteChunks } = makeDb();
+    await notes.put(makeNote());
+    await attachments.put(ATTACHMENT);
+    await noteChunks.put(CHUNK_ROW);
+    expect(await noteChunks.count()).toBe(1);
+
+    await lockNote(db, "note-1", "pin", "135790");
+    expect(await noteChunks.count()).toBe(0);
+    expect(JSON.stringify(await noteChunks.toArray())).not.toContain("12345678");
   });
 
   it("removeNoteLock leaves no stale vector behind", async () => {
