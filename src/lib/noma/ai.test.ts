@@ -10,6 +10,7 @@ import {
   aiActionsAvailable,
   aiProviderSettingsChanged,
   aiSlotChanged,
+  askNotes,
   clearAiSettings,
   embedTexts,
   embeddingCapabilityForPreset,
@@ -32,6 +33,7 @@ import {
   testAiConnection,
   truncateMiddle,
 } from "./ai";
+import { ASK_REFUSAL_SENTENCE, type AskExcerpt } from "./ask";
 import { buildBackupZip, readBackupZip } from "./backup";
 import { sanitizeHtml } from "./sanitize";
 import { disconnectDrive } from "./drive";
@@ -1470,5 +1472,104 @@ describe("embedTexts — OpenAI-compatible transport", () => {
       ),
     ).rejects.toMatchObject({ kind: "bad-response" });
     expect(calls).toHaveLength(0);
+  });
+});
+
+/* ---------------- Ask Noma generation (PR-B) ---------------- */
+
+describe("Ask Noma generation", () => {
+  const excerpts: AskExcerpt[] = [
+    {
+      noteId: "n1",
+      chunkIndex: 0,
+      title: "Monsoon plan",
+      text: "The monsoon arrives in June.",
+      similarity: 0.9,
+    },
+  ];
+
+  function promptOf(call: FetchCall): string {
+    const body = JSON.parse(String(call.init.body)) as {
+      contents: Array<{ parts: Array<{ text: string }> }>;
+    };
+    return body.contents[0]!.parts[0]!.text;
+  }
+
+  it("answers from the excerpts, sends the grounded prompt, and maps citations back", async () => {
+    const { calls } = stubFetch(() => geminiResponse("The monsoon arrives in June [1]."));
+    const result = await askNotes(API_KEY, {
+      question: "When does the monsoon arrive?",
+      excerpts,
+    });
+    expect(result).toEqual({
+      status: "answer",
+      text: "The monsoon arrives in June [1].",
+      citations: [{ n: 1, noteId: "n1", chunkIndex: 0 }],
+    });
+    expect(calls).toHaveLength(1);
+    const prompt = promptOf(calls[0]!);
+    expect(prompt).toContain(`[1] From "Monsoon plan": The monsoon arrives in June.`);
+    expect(prompt).toContain(ASK_REFUSAL_SENTENCE);
+    expect(prompt).toContain("Question: When does the monsoon arrive?");
+  });
+
+  it("returns no-evidence without calling the provider when there are no excerpts", async () => {
+    const { calls } = stubFetch(() => geminiResponse("never"));
+    const result = await askNotes(API_KEY, { question: "anything?", excerpts: [] });
+    expect(result).toEqual({ status: "no-evidence" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("surfaces the model's refusal as a typed refusal", async () => {
+    stubFetch(() => geminiResponse(ASK_REFUSAL_SENTENCE));
+    const result = await askNotes(API_KEY, { question: "unanswerable?", excerpts });
+    expect(result).toEqual({ status: "refusal" });
+  });
+
+  it("keeps provider failures on the existing AiError kinds", async () => {
+    const cases: { name: string; handler: () => Promise<Response> | Response; kind: string }[] = [
+      {
+        name: "network failure",
+        handler: () => Promise.reject(new TypeError("fetch failed")),
+        kind: "offline",
+      },
+      { name: "429", handler: () => statusResponse(429), kind: "rate-limited" },
+      { name: "403", handler: () => statusResponse(403), kind: "invalid-key" },
+      {
+        name: "malformed JSON body",
+        handler: () => new Response("{oops", { status: 200 }),
+        kind: "bad-response",
+      },
+    ];
+    for (const testCase of cases) {
+      stubFetch(testCase.handler);
+      const error = await askNotes(API_KEY, { question: "q", excerpts }).catch((e: unknown) => e);
+      expect(error, testCase.name).toBeInstanceOf(AiError);
+      expect((error as AiError).kind, testCase.name).toBe(testCase.kind);
+    }
+  });
+
+  it("throws no-key without calling fetch when the key is blank", async () => {
+    const { calls } = stubFetch(() => geminiResponse("never"));
+    const error = await askNotes("  ", { question: "q", excerpts }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AiError);
+    expect((error as AiError).kind).toBe("no-key");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("passes a previous turn into the prompt as labelled conversation", async () => {
+    const { calls } = stubFetch(() => geminiResponse("Still June [1]."));
+    const result = await askNotes(API_KEY, {
+      question: "And when does it end?",
+      excerpts,
+      previousTurn: {
+        question: "When does the monsoon arrive?",
+        answer: "The monsoon arrives in June [1].",
+      },
+    });
+    expect(result.status).toBe("answer");
+    const prompt = promptOf(calls[0]!);
+    expect(prompt).toContain("Earlier conversation (context only — not evidence):");
+    expect(prompt).toContain("Q: When does the monsoon arrive?");
   });
 });

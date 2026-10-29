@@ -1,3 +1,4 @@
+import { buildAskPrompt, parseAskAnswer, type AskAnswerResult, type AskExcerpt } from "./ask";
 import { htmlToPlainText } from "./sanitize";
 import type { Note } from "./types";
 
@@ -12,6 +13,8 @@ import type { Note } from "./types";
  * embedding calls happen only inside the user's explicit index
  * build/update, on their own note saves once they have opted in by
  * building an index, and on their own searches — see semantic.ts.)
+ * Ask Noma follows it too: retrieval is local, and its one generation
+ * call happens only when the user asks a question — see ask.ts.
  *
  * Two API shapes cover every major provider: Gemini's native API
  * (direct Google calls) and one OpenAI-compatible chat-completions
@@ -1290,3 +1293,37 @@ export async function suggestTags(
   return { tags: parseTagSuggestions(text, input.currentTagNames), truncated: prepared.truncated };
 }
 
+export interface AskNotesInput {
+  question: string;
+  /** Excerpts retrieved locally by `retrieveChunks` (ask.ts), best first. */
+  excerpts: AskExcerpt[];
+  /**
+   * The immediately previous Q/A pair, when this question is a
+   * follow-up. Included in the prompt only if budget remains after
+   * the excerpts, capped and labelled as conversation — never as
+   * evidence (spec §3).
+   */
+  previousTurn?: { question: string; answer: string };
+}
+
+export type AskNotesResult = AskAnswerResult;
+
+/**
+ * Ask Noma's one generation call. Grounded or silent: with no
+ * eligible excerpts there is nothing to ground an answer in, so the
+ * result is a typed "no-evidence" and the provider is never called —
+ * no tokens spent on a guaranteed refusal. Otherwise the prompt is
+ * assembled by ask.ts inside the shared budget, the reply is parsed
+ * back into a typed answer/refusal, and provider failures propagate
+ * as the same AiError kinds every other AI action surfaces.
+ */
+export async function askNotes(
+  apiKey: string,
+  input: AskNotesInput,
+  settings: AiSettings | null = null,
+): Promise<AskNotesResult> {
+  if (input.excerpts.length === 0) return { status: "no-evidence" };
+  const { prompt, excerpts } = buildAskPrompt(input.question, input.excerpts, input.previousTurn);
+  const { text } = await generateText(apiKey, prompt, settings);
+  return parseAskAnswer(text, excerpts);
+}
