@@ -1300,6 +1300,32 @@ describe("getAiEmbeddingTarget", () => {
     });
     expect(getAiEmbeddingTarget(OWNER)?.embeddingModel).toBe("openai/text-embedding-3-large");
   });
+
+  it("upgrades a slot holding the legacy 3-small default to the new default", () => {
+    saveAiRecord(OWNER, {
+      enabled: true,
+      activePreset: "openai",
+      providers: { openai: { apiKey: API_KEY, embeddingModel: "text-embedding-3-small" } },
+    });
+    expect(getAiEmbeddingTarget(OWNER)?.embeddingModel).toBe("text-embedding-3-large");
+    saveAiRecord(OWNER, {
+      enabled: true,
+      activePreset: "openrouter",
+      providers: {
+        openrouter: { apiKey: API_KEY, embeddingModel: "openai/text-embedding-3-small" },
+      },
+    });
+    expect(getAiEmbeddingTarget(OWNER)?.embeddingModel).toBe("openai/text-embedding-3-large");
+  });
+
+  it("preserves a genuinely custom saved embedding model", () => {
+    saveAiRecord(OWNER, {
+      enabled: true,
+      activePreset: "openai",
+      providers: { openai: { apiKey: API_KEY, embeddingModel: "text-embedding-ada-002" } },
+    });
+    expect(getAiEmbeddingTarget(OWNER)?.embeddingModel).toBe("text-embedding-ada-002");
+  });
 });
 
 /* ---------------- Embeddings client (embedTexts) ---------------- */
