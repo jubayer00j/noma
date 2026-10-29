@@ -741,8 +741,9 @@ export function AiSection({ ownerId, db }: { ownerId: string | null; db: NomaDat
               <>
                 <p className="text-sm text-muted-foreground">
                   Ask a question and get an answer grounded in your notes, with citations you can
-                  open to check. Asking sends only the passages it finds, plus your question, to{" "}
-                  {providerName} under your key — nothing is sent until you ask.
+                  open to check. Asking sends the passages it finds and your question to{" "}
+                  {providerName} under your key — plus, on a follow-up, your previous question and
+                  its answer, labelled as conversation. Nothing is sent until you ask.
                 </p>
                 <p className="text-sm text-muted-foreground">
                   Answers come from the same index as semantic search: both halves live on this
