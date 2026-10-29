@@ -7,7 +7,7 @@ import {
   type EmbeddingSettings,
 } from "./ai";
 import type { NomaDatabase } from "./db";
-import { SEMANTIC_THRESHOLD, providerKeyFor } from "./semantic";
+import { SEMANTIC_THRESHOLD, chunkNoteText, fnv1a, providerKeyFor } from "./semantic";
 import type { Note } from "./types";
 
 /**
@@ -86,6 +86,12 @@ function embeddingSettings(target: AiEmbeddingTarget): EmbeddingSettings {
  * caller's live list and eligible *right now*: a note locked, trashed
  * or deleted after indexing is dropped however high it scores, so a
  * stale chunk can never surface text the user has since locked away.
+ * Freshness is validated too: a surviving row must still be exactly a
+ * chunk of the note's current text (same chunk index, same content
+ * hash — the index's own identity mechanism). Save-time re-embedding
+ * is best-effort and fails silently, so an edited note can leave stale
+ * rows behind; without this check Ask would quote text the user has
+ * since removed or rewritten as if it were current.
  */
 export async function retrieveChunks(
   db: NomaDatabase,
@@ -103,6 +109,7 @@ export async function retrieveChunks(
   if (!queryVector) return [];
 
   const scored: AskExcerpt[] = [];
+  const rowHashes = new Map<string, string>();
   for (const row of rows) {
     if (row.providerKey !== providerKeyFor(target, row.dims)) continue;
     if (row.vector.length !== queryVector.length) continue;
@@ -113,6 +120,7 @@ export async function retrieveChunks(
       dot += row.vector[i]! * queryVector[i]!;
     }
     if (dot < SEMANTIC_THRESHOLD) continue;
+    rowHashes.set(row.id, row.contentHash);
     scored.push({
       noteId: row.noteId,
       chunkIndex: row.chunkIndex,
@@ -129,10 +137,28 @@ export async function retrieveChunks(
       (a.noteId < b.noteId ? -1 : a.noteId > b.noteId ? 1 : a.chunkIndex - b.chunkIndex),
   );
 
+  // Freshness, per candidate note, computed at most once: the content
+  // hash of each chunk of the note's CURRENT text, by chunk index.
+  const freshHashes = new Map<string, Map<number, string>>();
+  const currentChunkHashes = (note: Note): Map<number, string> => {
+    let hashes = freshHashes.get(note.id);
+    if (!hashes) {
+      hashes = new Map(chunkNoteText(note).map((text, index) => [index, fnv1a(text)]));
+      freshHashes.set(note.id, hashes);
+    }
+    return hashes;
+  };
+
   const perNote = new Map<string, number>();
   const out: AskExcerpt[] = [];
   for (const item of scored) {
     if (out.length >= ASK_MAX_EXCERPTS) break;
+    const note = notesById.get(item.noteId)!;
+    if (
+      currentChunkHashes(note).get(item.chunkIndex) !==
+      rowHashes.get(`${item.noteId}#${item.chunkIndex}`)
+    )
+      continue;
     const count = perNote.get(item.noteId) ?? 0;
     if (count >= ASK_MAX_EXCERPTS_PER_NOTE) continue;
     perNote.set(item.noteId, count + 1);

@@ -16,7 +16,7 @@ import {
   type AskExcerpt,
 } from "./ask";
 import type { NomaDatabase } from "./db";
-import { fnv1a, providerKeyFor } from "./semantic";
+import { chunkNoteText, fnv1a, providerKeyFor } from "./semantic";
 import type { Note, NoteChunk } from "./types";
 
 const OWNER = "user-1";
@@ -110,18 +110,23 @@ function geminiTarget(): AiEmbeddingTarget {
   return target;
 }
 
-/** A chunk row as the index build would have written it. */
+/**
+ * A chunk row as the index build would have written it: by default the
+ * text (and therefore the content hash) is the note's real current
+ * chunk at that index, because retrieval now validates freshness
+ * against a fresh chunking of the live note.
+ */
 function chunkRow(
   target: AiEmbeddingTarget,
-  noteId: string,
+  note: Note,
   chunkIndex: number,
   vector: number[],
-  text = `chunk ${chunkIndex} of ${noteId}`,
+  text = chunkNoteText(note)[chunkIndex] ?? `chunk ${chunkIndex} of ${note.id}`,
   providerKey = providerKeyFor(target, vector.length),
 ): NoteChunk {
   return {
-    id: `${noteId}#${chunkIndex}`,
-    noteId,
+    id: `${note.id}#${chunkIndex}`,
+    noteId: note.id,
     chunkIndex,
     providerKey,
     dims: vector.length,
@@ -130,6 +135,15 @@ function chunkRow(
     text,
     updatedAt: 1,
   };
+}
+
+/** Body copy long enough to split into several ~700-char chunks. */
+function longContent(paragraphs: number): string {
+  return Array.from(
+    { length: paragraphs },
+    (_, i) =>
+      `<p>Paragraph ${i + 1} keeps returning to the monsoon, the river, and the long wet season in the delta.</p>`,
+  ).join("");
 }
 
 /**
@@ -175,16 +189,20 @@ describe("retrieveChunks", () => {
     stubEmbedFetch(() => [1, 0]);
     const target = geminiTarget();
     const db = new FakeDb();
+    const noteA = baseNote({ id: "a", title: "Alpha" });
+    const noteB = baseNote({ id: "b", title: "Beta" });
+    const noteC = baseNote({ id: "c", title: "Gamma" });
+    const noteD = baseNote({ id: "d", title: "Delta" });
     const notes = new Map<string, Note>([
-      ["a", baseNote({ id: "a", title: "Alpha" })],
-      ["b", baseNote({ id: "b", title: "Beta" })],
-      ["c", baseNote({ id: "c", title: "Gamma" })],
-      ["d", baseNote({ id: "d", title: "Delta" })],
+      ["a", noteA],
+      ["b", noteB],
+      ["c", noteC],
+      ["d", noteD],
     ]);
-    await db.noteChunks.put(chunkRow(target, "b", 0, [0.8, 0.6], "beta chunk"));
-    await db.noteChunks.put(chunkRow(target, "a", 0, [1, 0], "alpha chunk"));
-    await db.noteChunks.put(chunkRow(target, "c", 0, [0, 1], "gamma chunk"));
-    await db.noteChunks.put(chunkRow(target, "d", 0, [0.5, 0.5], "delta chunk"));
+    await db.noteChunks.put(chunkRow(target, noteB, 0, [0.8, 0.6]));
+    await db.noteChunks.put(chunkRow(target, noteA, 0, [1, 0]));
+    await db.noteChunks.put(chunkRow(target, noteC, 0, [0, 1]));
+    await db.noteChunks.put(chunkRow(target, noteD, 0, [0.5, 0.5]));
 
     const out = await retrieveChunks(asDb(db), "monsoon?", target, notes);
     // sims: a = 1, b = 0.8, d = 0.5 (exactly the floor — kept), c = 0 (dropped).
@@ -192,19 +210,20 @@ describe("retrieveChunks", () => {
     expect(out[0]!.similarity).toBeCloseTo(1);
     expect(out[1]!.similarity).toBeCloseTo(0.8);
     expect(out[2]!.similarity).toBeCloseTo(0.5);
-    expect(out[0]).toMatchObject({ title: "Alpha", text: "alpha chunk", chunkIndex: 0 });
+    expect(out[0]).toMatchObject({ title: "Alpha", text: chunkNoteText(noteA)[0], chunkIndex: 0 });
   });
 
   it("caps at two chunks per note — the best two, not the first two", async () => {
     stubEmbedFetch(() => [1, 0]);
     const target = geminiTarget();
     const db = new FakeDb();
-    const notes = new Map([["a", baseNote({ id: "a" })]]);
+    const note = baseNote({ id: "a", content: longContent(24) });
+    const notes = new Map([["a", note]]);
     // chunkIndex order is NOT similarity order on purpose.
-    await db.noteChunks.put(chunkRow(target, "a", 0, [0.96, 0]));
-    await db.noteChunks.put(chunkRow(target, "a", 1, [0.99, 0]));
-    await db.noteChunks.put(chunkRow(target, "a", 2, [0.98, 0]));
-    await db.noteChunks.put(chunkRow(target, "a", 3, [0.97, 0]));
+    await db.noteChunks.put(chunkRow(target, note, 0, [0.96, 0]));
+    await db.noteChunks.put(chunkRow(target, note, 1, [0.99, 0]));
+    await db.noteChunks.put(chunkRow(target, note, 2, [0.98, 0]));
+    await db.noteChunks.put(chunkRow(target, note, 3, [0.97, 0]));
 
     const out = await retrieveChunks(asDb(db), "q", target, notes);
     expect(out.map((e) => e.chunkIndex)).toEqual([1, 2]);
@@ -223,9 +242,10 @@ describe("retrieveChunks", () => {
       e: [0.91, 0.9],
     };
     for (const [id, pair] of Object.entries(sims)) {
-      notes.set(id, baseNote({ id }));
-      await db.noteChunks.put(chunkRow(target, id, 0, [pair[0]!, 0]));
-      await db.noteChunks.put(chunkRow(target, id, 1, [pair[1]!, 0]));
+      const note = baseNote({ id, content: longContent(10) });
+      notes.set(id, note);
+      await db.noteChunks.put(chunkRow(target, note, 0, [pair[0]!, 0]));
+      await db.noteChunks.put(chunkRow(target, note, 1, [pair[1]!, 0]));
     }
 
     const out = await retrieveChunks(asDb(db), "q", target, notes);
@@ -240,30 +260,70 @@ describe("retrieveChunks", () => {
     // Every chunk below scores a perfect 1 — each was indexed while
     // its note was eligible. Only the note's CURRENT state may let it
     // through.
+    const okNote = baseNote({ id: "ok" });
+    const lockedNote = baseNote({ id: "locked", lock: FAKE_LOCK });
+    const trashedNote = baseNote({ id: "trashed", deleted: true, deletedAt: 1 });
+    const templateNote = baseNote({ id: "template", isTemplate: true });
+    // "ghost" is built for its row but deliberately never added to the
+    // live map: its note was deleted outright after indexing.
+    const ghostNote = baseNote({ id: "ghost" });
     const notes = new Map<string, Note>([
-      ["ok", baseNote({ id: "ok" })],
-      ["locked", baseNote({ id: "locked", lock: FAKE_LOCK })],
-      ["trashed", baseNote({ id: "trashed", deleted: true, deletedAt: 1 })],
-      ["template", baseNote({ id: "template", isTemplate: true })],
-      // "ghost" deliberately absent: deleted outright after indexing.
+      ["ok", okNote],
+      ["locked", lockedNote],
+      ["trashed", trashedNote],
+      ["template", templateNote],
     ]);
-    for (const id of ["ok", "locked", "trashed", "template", "ghost"]) {
-      await db.noteChunks.put(chunkRow(target, id, 0, [1, 0], `${id} chunk`));
+    for (const note of [okNote, lockedNote, trashedNote, templateNote, ghostNote]) {
+      await db.noteChunks.put(chunkRow(target, note, 0, [1, 0]));
     }
 
     const out = await retrieveChunks(asDb(db), "q", target, notes);
     expect(out.map((e) => e.noteId)).toEqual(["ok"]);
   });
 
+  it("never quotes a chunk whose note was edited after indexing", async () => {
+    stubEmbedFetch(() => [1, 0]);
+    const target = geminiTarget();
+    const db = new FakeDb();
+    // The row was written when the note held the old text. The live
+    // note has since been rewritten; save-time re-embedding is
+    // best-effort, so the stale row is still sitting in the table —
+    // and it scores a perfect 1.
+    const indexed = baseNote({ id: "a", content: "<p>The old plan was to travel in June.</p>" });
+    await db.noteChunks.put(chunkRow(target, indexed, 0, [1, 0]));
+    const live = new Map([
+      ["a", baseNote({ id: "a", content: "<p>The new plan is to stay home in July.</p>" })],
+    ]);
+
+    const out = await retrieveChunks(asDb(db), "q", target, live);
+    expect(out).toEqual([]);
+  });
+
+  it("keeps chunks an edit did not touch, and drops chunks past the edited note's new end", async () => {
+    stubEmbedFetch(() => [1, 0]);
+    const target = geminiTarget();
+    const db = new FakeDb();
+    const indexed = baseNote({ id: "a", content: longContent(24) });
+    await db.noteChunks.put(chunkRow(target, indexed, 0, [1, 0]));
+    await db.noteChunks.put(chunkRow(target, indexed, 3, [1, 0]));
+    // Same head, tail cut away: chunk 0 is still exactly current,
+    // chunk index 3 no longer exists.
+    const liveNote = baseNote({ id: "a", content: longContent(10) });
+
+    const out = await retrieveChunks(asDb(db), "q", target, new Map([["a", liveNote]]));
+    expect(out.map((e) => e.chunkIndex)).toEqual([0]);
+  });
+
   it("never scores rows from another embedding space or with mismatched dims", async () => {
     stubEmbedFetch(() => [1, 0]);
     const target = geminiTarget();
     const db = new FakeDb();
-    const notes = new Map([["a", baseNote({ id: "a" })]]);
+    const note = baseNote({ id: "a" });
+    const notes = new Map([["a", note]]);
     await db.noteChunks.put(
-      chunkRow(target, "a", 0, [1, 0], "other model chunk", "gemini|native|other-model|2"),
+      chunkRow(target, note, 0, [1, 0], "other model chunk", "gemini|native|other-model|2"),
     );
-    await db.noteChunks.put(chunkRow(target, "a", 1, [1, 0, 0], "three-dim chunk"));
+    await db.noteChunks.put(chunkRow(target, note, 1, [1, 0, 0], "three-dim chunk"));
 
     const out = await retrieveChunks(asDb(db), "q", target, notes);
     expect(out).toEqual([]);
@@ -273,8 +333,9 @@ describe("retrieveChunks", () => {
     const { calls } = stubEmbedFetch(() => [1, 0]);
     const target = geminiTarget();
     const db = new FakeDb();
-    const notes = new Map([["a", baseNote({ id: "a" })]]);
-    await db.noteChunks.put(chunkRow(target, "a", 0, [1, 0]));
+    const note = baseNote({ id: "a" });
+    const notes = new Map([["a", note]]);
+    await db.noteChunks.put(chunkRow(target, note, 0, [1, 0]));
 
     expect(await retrieveChunks(asDb(db), "   ", target, notes)).toEqual([]);
     expect(await retrieveChunks(asDb(db), "q", null, notes)).toEqual([]);
