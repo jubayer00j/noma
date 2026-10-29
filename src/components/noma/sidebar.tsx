@@ -121,6 +121,10 @@ export function NomaSidebar({
     trash: notes.filter((note) => note.deleted).length,
   };
 
+  // While the Ask surface is open it owns the highlight — the notes
+  // view underneath keeps its state but must not also read as current.
+  const viewActive = (target: ViewState) => !askActive && sameView(view, target);
+
   return (
     <div className="flex h-full flex-col bg-sidebar pt-safe pb-safe pl-safe">
       <div className="flex items-center justify-between px-4 pt-5 pb-3">
@@ -183,49 +187,49 @@ export function NomaSidebar({
             label="All Notes"
             icon={FileText}
             count={counts.all}
-            active={sameView(view, { kind: "all" })}
+            active={viewActive({ kind: "all" })}
             onClick={() => onSelectView({ kind: "all" })}
           />
           <NavItem
             label="Recent"
             icon={Clock}
             count={counts.recent}
-            active={sameView(view, { kind: "recent" })}
+            active={viewActive({ kind: "recent" })}
             onClick={() => onSelectView({ kind: "recent" })}
           />
           <NavItem
             label="Pinned"
             icon={Pin}
             count={counts.pinned}
-            active={sameView(view, { kind: "pinned" })}
+            active={viewActive({ kind: "pinned" })}
             onClick={() => onSelectView({ kind: "pinned" })}
           />
           <NavItem
             label="Favorites"
             icon={Star}
             count={counts.favorites}
-            active={sameView(view, { kind: "favorites" })}
+            active={viewActive({ kind: "favorites" })}
             onClick={() => onSelectView({ kind: "favorites" })}
           />
           <NavItem
             label="Reminders"
             icon={Bell}
             count={counts.reminders}
-            active={sameView(view, { kind: "reminders" })}
+            active={viewActive({ kind: "reminders" })}
             onClick={() => onSelectView({ kind: "reminders" })}
           />
           <NavItem
             label="Daily notes"
             icon={NotebookPen}
             count={counts.daily}
-            active={sameView(view, { kind: "daily" })}
+            active={viewActive({ kind: "daily" })}
             onClick={() => onSelectView({ kind: "daily" })}
           />
           <NavItem
             label="Templates"
             icon={LayoutTemplate}
             count={counts.templates}
-            active={sameView(view, { kind: "templates" })}
+            active={viewActive({ kind: "templates" })}
             onClick={() => onSelectView({ kind: "templates" })}
           />
         </div>
@@ -256,7 +260,7 @@ export function NomaSidebar({
                   count={
                     live.filter((note) => note.folderId === folder.id && !note.archived).length
                   }
-                  active={sameView(view, { kind: "folder", id: folder.id })}
+                  active={viewActive({ kind: "folder", id: folder.id })}
                   onClick={() => onSelectView({ kind: "folder", id: folder.id })}
                 />
                 <DropdownMenu>
@@ -312,7 +316,7 @@ export function NomaSidebar({
                   count={
                     live.filter((note) => note.tagIds.includes(tag.id) && !note.archived).length
                   }
-                  active={sameView(view, { kind: "tag", id: tag.id })}
+                  active={viewActive({ kind: "tag", id: tag.id })}
                   onClick={() => onSelectView({ kind: "tag", id: tag.id })}
                 />
                 <DropdownMenu>
@@ -347,14 +351,14 @@ export function NomaSidebar({
             label="Archive"
             icon={Archive}
             count={counts.archive}
-            active={sameView(view, { kind: "archive" })}
+            active={viewActive({ kind: "archive" })}
             onClick={() => onSelectView({ kind: "archive" })}
           />
           <NavItem
             label="Trash"
             icon={Trash2}
             count={counts.trash}
-            active={sameView(view, { kind: "trash" })}
+            active={viewActive({ kind: "trash" })}
             onClick={() => onSelectView({ kind: "trash" })}
           />
         </div>

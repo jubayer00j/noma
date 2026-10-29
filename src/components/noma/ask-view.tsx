@@ -336,7 +336,9 @@ export function AskView({
 
   const settingsButton = (
     <Button asChild className={`h-11 ${tap}`}>
-      <Link to="/settings">Open AI settings</Link>
+      <Link to="/settings" search={{ screen: "ai" }}>
+        Open AI settings
+      </Link>
     </Button>
   );
 
@@ -401,19 +403,19 @@ export function AskView({
         );
       case "ai-off":
         return gateCard(
-          "Ask Noma",
-          "Ask questions about your notes and get answers grounded in them, with sources you can open. Ask Noma runs on your own AI key — Noma has no server and sees nothing.",
+          "AI isn't set up yet",
+          "Ask questions about your notes and get answers grounded in them, with sources you can open. It runs on your own AI key — Noma has no server and sees nothing.",
           settingsButton,
         );
       case "no-embeddings":
         return gateCard(
-          "Ask Noma",
+          "Ask needs embeddings",
           `Ask Noma isn't available with ${providerName} — it has no embeddings service. Switch to a provider with embeddings to use it.`,
           settingsButton,
         );
       case "needs-embedding-model":
         return gateCard(
-          "Ask Noma",
+          "Ask needs an embedding model",
           `${providerName} has no default embedding model, and Ask Noma needs one to find the right passages. Add an embedding model in AI settings to switch Ask on.`,
           settingsButton,
         );
