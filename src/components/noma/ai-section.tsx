@@ -411,7 +411,8 @@ export function AiSection({ ownerId, db }: { ownerId: string | null; db: NomaDat
 
       <p className="text-sm text-muted-foreground">
         AI is off until you add your own key. When you tap an AI action, that note's text is sent to{" "}
-        {providerName} under your key. Noma has no server and sees nothing. Locked notes are never
+        {providerName} under your key — and once you build the search index below, edits to indexed
+        notes are re-embedded on save. Noma has no server and sees nothing. Locked notes are never
         sent.
       </p>
       <p className="text-xs text-muted-foreground">

@@ -618,7 +618,8 @@ export function SettingsPage({
           <div className="space-y-5 py-8">
             <p className="text-sm text-muted-foreground">
               Optional. Bring your own key for note summaries, tag suggestions, semantic search and
-              Ask Noma — only ever when you tap.
+              Ask Noma. Summaries and suggestions send only when you tap; after you build an index,
+              edits to indexed notes are re-embedded on save to keep search and Ask current.
             </p>
             <AiSection ownerId={ownerId} db={db} />
           </div>
