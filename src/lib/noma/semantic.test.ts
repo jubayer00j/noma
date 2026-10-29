@@ -20,6 +20,7 @@ import {
   maintainSemanticIndexForNote,
   mergeSemanticResults,
   providerKeyFor,
+  similarityFloorFor,
   reconcileIndex,
   removeIndex,
   semanticScores,
@@ -789,6 +790,25 @@ describe("semantic scores and result blending", () => {
     // No scores → the exact keyword array back, untouched.
     expect(mergeSemanticResults(keyword, null, notes)).toBe(keyword);
     expect(mergeSemanticResults(keyword, new Map(), notes)).toBe(keyword);
+  });
+
+  it("resolves per-model similarity floors, vendor prefixes stripped", () => {
+    expect(similarityFloorFor("text-embedding-3-large")).toBe(0.38);
+    expect(similarityFloorFor("openai/text-embedding-3-large")).toBe(0.38);
+    expect(similarityFloorFor("gemini-embedding-001")).toBe(0.5);
+    expect(similarityFloorFor("text-embedding-3-small")).toBe(0.5);
+    expect(similarityFloorFor("BAAI/bge-large-en-v1.5")).toBe(0.5);
+  });
+
+  it("applies the caller-resolved floor in mergeSemanticResults", () => {
+    const note = baseNote({ id: "mid", content: "<p>Heavy rain all week.</p>" });
+    const scores = new Map([["mid", 0.45]]);
+    // Default floor 0.5: a 0.45 similarity earns nothing.
+    expect(mergeSemanticResults([], scores, [note])).toEqual([]);
+    // The 3-large floor (0.38): the same score surfaces the note.
+    const merged = mergeSemanticResults([], scores, [note], 0.38);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.note.id).toBe("mid");
   });
 
   it("keeps keyword-only ordering identical when every similarity is below threshold", async () => {

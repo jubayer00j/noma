@@ -133,8 +133,8 @@ export interface EmbeddingCapability {
 
 export const EMBEDDING_CAPABILITIES: Record<string, EmbeddingCapability> = {
   gemini: { mode: "native", defaultModel: "gemini-embedding-001" },
-  openai: { mode: "compatible", defaultModel: "text-embedding-3-small" },
-  openrouter: { mode: "compatible", defaultModel: "openai/text-embedding-3-small" },
+  openai: { mode: "compatible", defaultModel: "text-embedding-3-large" },
+  openrouter: { mode: "compatible", defaultModel: "openai/text-embedding-3-large" },
   groq: { mode: "none" },
   together: { mode: "compatible" },
   deepseek: { mode: "none" },
@@ -144,6 +144,33 @@ export const EMBEDDING_CAPABILITIES: Record<string, EmbeddingCapability> = {
 
 export function embeddingCapabilityForPreset(presetId: string): EmbeddingCapability {
   return EMBEDDING_CAPABILITIES[presetId] ?? { mode: "none" };
+}
+
+/**
+ * The pinned embedding defaults these presets shipped before the
+ * 3-large calibration (PR #104). The settings screen pre-fills the
+ * embedding-model field from the default and saves it with the slot,
+ * so a slot holding exactly the old default means "never chose", not
+ * a choice — it resolves as unset and the current default applies
+ * (which also puts the index into the rebuild state, since the model
+ * changed). Any other saved value is a real user choice and is
+ * preserved verbatim. The one trade-off: someone who deliberately
+ * re-types the old default string gets the new default too — accepted,
+ * because the old string was only ever the silent default.
+ */
+const LEGACY_EMBEDDING_DEFAULTS: Record<string, string> = {
+  openai: "text-embedding-3-small",
+  openrouter: "openai/text-embedding-3-small",
+};
+
+/** A slot's saved embedding model, with a legacy default read as unset. */
+export function savedEmbeddingModel(
+  presetId: string,
+  slot: AiProviderSlot | undefined,
+): string {
+  const saved = slot?.embeddingModel?.trim() ?? "";
+  if (saved && saved === LEGACY_EMBEDDING_DEFAULTS[presetId]) return "";
+  return saved;
 }
 
 /** Gemini embedding output size Noma pins (Matryoshka 768 of 3072/1536/768). */
@@ -502,7 +529,7 @@ export function getAiEmbeddingTarget(ownerId: string | null): AiEmbeddingTarget 
   const capability = embeddingCapabilityForPreset(presetId);
   if (capability.mode === "none") return null;
   const embeddingModel =
-    record.providers[presetId]?.embeddingModel?.trim() || capability.defaultModel || "";
+    savedEmbeddingModel(presetId, record.providers[presetId]) || capability.defaultModel || "";
   if (!embeddingModel) return null;
   return { settings, presetId, embeddingModel, mode: capability.mode };
 }

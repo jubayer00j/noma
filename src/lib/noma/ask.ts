@@ -7,7 +7,7 @@ import {
   type EmbeddingSettings,
 } from "./ai";
 import type { NomaDatabase } from "./db";
-import { SEMANTIC_THRESHOLD, chunkNoteText, fnv1a, providerKeyFor } from "./semantic";
+import { chunkNoteText, fnv1a, providerKeyFor, similarityFloorFor } from "./semantic";
 import type { Note } from "./types";
 
 /**
@@ -107,6 +107,7 @@ export async function retrieveChunks(
   if (rows.length === 0) return [];
   const [queryVector] = await embedTexts(embeddingSettings(target), [question], "query");
   if (!queryVector) return [];
+  const floor = similarityFloorFor(target.embeddingModel);
 
   const scored: AskExcerpt[] = [];
   const rowHashes = new Map<string, string>();
@@ -119,7 +120,7 @@ export async function retrieveChunks(
     for (let i = 0; i < row.vector.length; i++) {
       dot += row.vector[i]! * queryVector[i]!;
     }
-    if (dot < SEMANTIC_THRESHOLD) continue;
+    if (dot < floor) continue;
     rowHashes.set(row.id, row.contentHash);
     scored.push({
       noteId: row.noteId,

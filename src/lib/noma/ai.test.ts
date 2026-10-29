@@ -1285,6 +1285,47 @@ describe("getAiEmbeddingTarget", () => {
     });
     expect(getAiEmbeddingTarget(OWNER)?.embeddingModel).toBe("BAAI/bge-large-en-v1.5");
   });
+
+  it("pins text-embedding-3-large as the OpenAI/OpenRouter embedding default", () => {
+    saveAiRecord(OWNER, {
+      enabled: true,
+      activePreset: "openai",
+      providers: { openai: { apiKey: API_KEY } },
+    });
+    expect(getAiEmbeddingTarget(OWNER)?.embeddingModel).toBe("text-embedding-3-large");
+    saveAiRecord(OWNER, {
+      enabled: true,
+      activePreset: "openrouter",
+      providers: { openrouter: { apiKey: API_KEY } },
+    });
+    expect(getAiEmbeddingTarget(OWNER)?.embeddingModel).toBe("openai/text-embedding-3-large");
+  });
+
+  it("upgrades a slot holding the legacy 3-small default to the new default", () => {
+    saveAiRecord(OWNER, {
+      enabled: true,
+      activePreset: "openai",
+      providers: { openai: { apiKey: API_KEY, embeddingModel: "text-embedding-3-small" } },
+    });
+    expect(getAiEmbeddingTarget(OWNER)?.embeddingModel).toBe("text-embedding-3-large");
+    saveAiRecord(OWNER, {
+      enabled: true,
+      activePreset: "openrouter",
+      providers: {
+        openrouter: { apiKey: API_KEY, embeddingModel: "openai/text-embedding-3-small" },
+      },
+    });
+    expect(getAiEmbeddingTarget(OWNER)?.embeddingModel).toBe("openai/text-embedding-3-large");
+  });
+
+  it("preserves a genuinely custom saved embedding model", () => {
+    saveAiRecord(OWNER, {
+      enabled: true,
+      activePreset: "openai",
+      providers: { openai: { apiKey: API_KEY, embeddingModel: "text-embedding-ada-002" } },
+    });
+    expect(getAiEmbeddingTarget(OWNER)?.embeddingModel).toBe("text-embedding-ada-002");
+  });
 });
 
 /* ---------------- Embeddings client (embedTexts) ---------------- */
@@ -1407,7 +1448,7 @@ describe("embedTexts — OpenAI-compatible transport", () => {
       `Bearer ${API_KEY}`,
     );
     expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
-      model: "text-embedding-3-small",
+      model: "text-embedding-3-large",
       input: ["a", "b"],
     });
     expect(vectors).toHaveLength(2);
@@ -1441,7 +1482,7 @@ describe("embedTexts — OpenAI-compatible transport", () => {
     expect(vectors[1]![1]).toBeCloseTo(1);
     const headers = calls[0]!.init.headers as Record<string, string>;
     expect(headers["X-Title"]).toBe("Noma");
-    expect(JSON.parse(String(calls[0]!.init.body)).model).toBe("openai/text-embedding-3-small");
+    expect(JSON.parse(String(calls[0]!.init.body)).model).toBe("openai/text-embedding-3-large");
   });
 
   it("maps a 429 to rate-limited and rejects a short data array", async () => {

@@ -19,6 +19,7 @@ import {
   OPENAI_PRESETS,
   aiSlotChanged,
   embeddingCapabilityForPreset,
+  savedEmbeddingModel,
   getAiEmbeddingTarget,
   getAiRecord,
   normalizeBaseUrl,
@@ -106,7 +107,7 @@ export function AiSection({ ownerId, db }: { ownerId: string | null; db: NomaDat
     setKeyDraft("");
     setReplacingKey(false);
     setEmbeddingModelDraft(
-      slot?.embeddingModel ?? embeddingCapabilityForPreset(active).defaultModel ?? "",
+      savedEmbeddingModel(active, slot) || embeddingCapabilityForPreset(active).defaultModel || "",
     );
     if (active === "gemini") {
       setBaseUrlDraft("");
@@ -266,7 +267,9 @@ export function AiSection({ ownerId, db }: { ownerId: string | null; db: NomaDat
     setKeyDraft("");
     setReplacingKey(false);
     setEmbeddingModelDraft(
-      nextSlot?.embeddingModel ?? embeddingCapabilityForPreset(id).defaultModel ?? "",
+      savedEmbeddingModel(id, nextSlot) ||
+        embeddingCapabilityForPreset(id).defaultModel ||
+        "",
     );
     if (id === "gemini") {
       setBaseUrlDraft("");

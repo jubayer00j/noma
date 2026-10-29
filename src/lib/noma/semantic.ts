@@ -49,6 +49,35 @@ import type { Note, NoteChunk, NoteEmbedding } from "./types";
 export const EMBED_MAX_CHARS = 6000;
 /** Cosine similarity a note must reach to earn a semantic contribution. */
 export const SEMANTIC_THRESHOLD = 0.5;
+
+/**
+ * Per-model similarity floors, resolved by `similarityFloorFor` and
+ * used by every similarity consumer (Ask retrieval, search merge) so
+ * the two never disagree about the same index. Calibrated on a
+ * measured EN/BN matrix (2026-10-29, 4 notes × 8 questions, spec at
+ * ~/workspace/projects/noma-embedding-threshold-calibration-spec.md):
+ * gemini-embedding-001's true matches land 0.71–0.78, so it keeps the
+ * 0.5 default; text-embedding-3-large's matches land 0.41–0.78 with
+ * unrelated controls ≤ 0.36 at native dims, so it gets 0.38. Models
+ * not listed keep 0.5 — notably text-embedding-3-small, whose
+ * cross-language matches (0.07–0.34) score BELOW an unrelated control
+ * (0.45): no lower floor is defensible for it, which is why the
+ * OpenAI/OpenRouter slots now default to 3-large instead.
+ */
+const SIMILARITY_FLOORS: Record<string, number> = {
+  "text-embedding-3-large": 0.38,
+};
+
+/**
+ * The similarity floor for an embedding model id. Vendor prefixes
+ * are stripped first ("openai/text-embedding-3-large" via OpenRouter
+ * is the same model as "text-embedding-3-large" via OpenAI), and
+ * unknown models get the SEMANTIC_THRESHOLD default.
+ */
+export function similarityFloorFor(embeddingModel: string): number {
+  const bare = embeddingModel.trim().toLowerCase().split("/").pop() ?? "";
+  return SIMILARITY_FLOORS[bare] ?? SEMANTIC_THRESHOLD;
+}
 /** Weight of a semantic hit: similarity 0.8 ≈ a title keyword hit (6). */
 export const SEMANTIC_WEIGHT = 10;
 
@@ -853,18 +882,21 @@ export async function semanticScores(
 /**
  * Blends semantic scores into keyword results: a note's final score
  * is its keyword score plus similarity × SEMANTIC_WEIGHT when the
- * similarity clears SEMANTIC_THRESHOLD, and semantic-only notes above
- * the threshold join with a plain-text-head snippet. Defence in
- * depth: a boost or a semantic-only entry is only ever applied to a
- * note that is eligible right now (never locked/template/trashed) and
- * present in the caller's live note list — a stale vector can never
- * surface a note on its own. With no scores, the keyword results are
- * returned untouched.
+ * similarity clears the floor, and semantic-only notes above the
+ * floor join with a plain-text-head snippet. The floor is the one
+ * resolved for the index's embedding model (`similarityFloorFor`);
+ * it defaults to SEMANTIC_THRESHOLD. Defence in depth: a boost or a
+ * semantic-only entry is only ever applied to a note that is
+ * eligible right now (never locked/template/trashed) and present in
+ * the caller's live note list — a stale vector can never surface a
+ * note on its own. With no scores, the keyword results are returned
+ * untouched.
  */
 export function mergeSemanticResults(
   keywordResults: SearchResult[],
   scores: Map<string, number> | null,
   notes: Note[],
+  floor: number = SEMANTIC_THRESHOLD,
 ): SearchResult[] {
   if (!scores || scores.size === 0) return keywordResults;
   const byId = new Map(notes.map((note) => [note.id, note]));
@@ -873,18 +905,14 @@ export function mergeSemanticResults(
   for (const result of keywordResults) {
     seen.add(result.note.id);
     const similarity = scores.get(result.note.id);
-    if (
-      similarity !== undefined &&
-      similarity >= SEMANTIC_THRESHOLD &&
-      noteEligibleForAi(result.note)
-    ) {
+    if (similarity !== undefined && similarity >= floor && noteEligibleForAi(result.note)) {
       merged.push({ ...result, score: result.score + similarity * SEMANTIC_WEIGHT });
     } else {
       merged.push(result);
     }
   }
   for (const [noteId, similarity] of scores) {
-    if (seen.has(noteId) || similarity < SEMANTIC_THRESHOLD) continue;
+    if (seen.has(noteId) || similarity < floor) continue;
     const note = byId.get(noteId);
     if (!note || !noteEligibleForAi(note)) continue;
     merged.push({

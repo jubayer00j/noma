@@ -110,6 +110,17 @@ function geminiTarget(): AiEmbeddingTarget {
   return target;
 }
 
+function openrouterTarget(): AiEmbeddingTarget {
+  saveAiRecord(OWNER, {
+    enabled: true,
+    activePreset: "openrouter",
+    providers: { openrouter: { apiKey: API_KEY } },
+  });
+  const target = getAiEmbeddingTarget(OWNER);
+  if (!target) throw new Error("expected an openrouter embedding target");
+  return target;
+}
+
 /**
  * A chunk row as the index build would have written it: by default the
  * text (and therefore the content hash) is the note's real current
@@ -160,7 +171,17 @@ function stubEmbedFetch(vectorFor: (text: string) => number[]): { calls: string[
       calls.push(body);
       const parsed = JSON.parse(body) as {
         requests?: Array<{ content: { parts: Array<{ text: string }> } }>;
+        input?: string[];
       };
+      if (parsed.input) {
+        // OpenAI-compatible shape: { input: [...] } → { data: [{ embedding }] }.
+        return new Response(
+          JSON.stringify({
+            data: parsed.input.map((text, index) => ({ index, embedding: vectorFor(text) })),
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
       const texts = (parsed.requests ?? []).map((r) => r.content.parts[0]!.text);
       return new Response(
         JSON.stringify({ embeddings: texts.map((text) => ({ values: vectorFor(text) })) }),
@@ -211,6 +232,24 @@ describe("retrieveChunks", () => {
     expect(out[1]!.similarity).toBeCloseTo(0.8);
     expect(out[2]!.similarity).toBeCloseTo(0.5);
     expect(out[0]).toMatchObject({ title: "Alpha", text: chunkNoteText(noteA)[0], chunkIndex: 0 });
+  });
+
+  it("applies the embedding model's own floor — 0.45 counts under 3-large, not under Gemini", async () => {
+    stubEmbedFetch(() => [1, 0]);
+    const note = baseNote({ id: "a", title: "Alpha" });
+    const notes = new Map([["a", note]]);
+    const mid: [number, number] = [0.45, Math.sqrt(1 - 0.45 * 0.45)];
+
+    const orTarget = openrouterTarget();
+    expect(orTarget.embeddingModel).toBe("openai/text-embedding-3-large");
+    const orDb = new FakeDb();
+    await orDb.noteChunks.put(chunkRow(orTarget, note, 0, mid));
+    expect(await retrieveChunks(asDb(orDb), "q", orTarget, notes)).toHaveLength(1);
+
+    const gTarget = geminiTarget();
+    const gDb = new FakeDb();
+    await gDb.noteChunks.put(chunkRow(gTarget, note, 0, mid));
+    expect(await retrieveChunks(asDb(gDb), "q", gTarget, notes)).toEqual([]);
   });
 
   it("caps at two chunks per note — the best two, not the first two", async () => {
