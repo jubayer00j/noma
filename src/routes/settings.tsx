@@ -617,8 +617,9 @@ export function SettingsPage({
         <div data-screen="ai" hidden={screen !== "ai"} aria-hidden={screen !== "ai"}>
           <div className="space-y-5 py-8">
             <p className="text-sm text-muted-foreground">
-              Optional. Bring your own Gemini key for note summaries and tag suggestions — only ever
-              when you tap.
+              Optional. Bring your own key for note summaries, tag suggestions, semantic search and
+              Ask Noma. Summaries and suggestions send only when you tap; after you build an index,
+              edits to indexed notes are re-embedded on save to keep search and Ask current.
             </p>
             <AiSection ownerId={ownerId} db={db} />
           </div>

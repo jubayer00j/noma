@@ -93,7 +93,7 @@ describe("writingSummary", () => {
 
 describe("aiSummary", () => {
   it("key saved vs not set up", () => {
-    expect(aiSummary({ hasKey: true })).toBe("Gemini key saved");
+    expect(aiSummary({ hasKey: true })).toBe("Key saved");
     expect(aiSummary({ hasKey: false })).toBe("Not set up");
   });
 });

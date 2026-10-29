@@ -79,9 +79,9 @@ export function writingSummary(input: WritingSummaryInput): string {
 
 /* ---------------- AI features ---------------- */
 
-/** Key presence only — the key itself never reaches a summary. */
+/** Key presence only — the key itself never reaches a summary. Provider-neutral: the saved key may belong to any preset, not just Gemini. */
 export function aiSummary(input: { hasKey: boolean }): string {
-  return input.hasKey ? "Gemini key saved" : "Not set up";
+  return input.hasKey ? "Key saved" : "Not set up";
 }
 
 /* ---------------- Data ---------------- */

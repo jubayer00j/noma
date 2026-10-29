@@ -32,6 +32,7 @@ import type { NomaDatabase } from "@/lib/noma/db";
 import {
   buildIndex,
   getIndexStatus,
+  indexStatusLine,
   reconcileIndex,
   removeIndex,
   type IndexProgress,
@@ -410,7 +411,8 @@ export function AiSection({ ownerId, db }: { ownerId: string | null; db: NomaDat
 
       <p className="text-sm text-muted-foreground">
         AI is off until you add your own key. When you tap an AI action, that note's text is sent to{" "}
-        {providerName} under your key. Noma has no server and sees nothing. Locked notes are never
+        {providerName} under your key — and once you build the search index below, edits to indexed
+        notes are re-embedded on save. Noma has no server and sees nothing. Locked notes are never
         sent.
       </p>
       <p className="text-xs text-muted-foreground">
@@ -652,20 +654,7 @@ export function AiSection({ ownerId, db }: { ownerId: string | null; db: NomaDat
 
                 {db && indexStatus && (
                   <p className="text-sm text-muted-foreground" role="status">
-                    {indexStatus.state === "not-built" &&
-                      `No search index yet. Building one sends each note's text to ${providerName} under your key — once per note, and again in small overlapping chunks for Ask Noma — and keeps only the resulting vectors on this device.`}
-                    {indexStatus.state === "invalid-provider" &&
-                      `The index on this device was built with ${indexStatus.embeddingModel ?? "a different embedding model"} — rebuild it to use semantic search with the current provider. Search stays keyword-only until then.`}
-                    {indexStatus.state === "ready" &&
-                      `Indexed ${indexStatus.indexedCount} note${indexStatus.indexedCount === 1 ? "" : "s"} · ${indexStatus.embeddingModel ?? "unknown model"} · ${
-                        indexStatus.staleCount > 0
-                          ? `${indexStatus.staleCount} changed since`
-                          : "up to date"
-                      }${
-                        indexStatus.chunksStaleCount > 0
-                          ? ` · Ask Noma chunks pending for ${indexStatus.chunksStaleCount} note${indexStatus.chunksStaleCount === 1 ? "" : "s"} — Update index adds them`
-                          : ""
-                      }`}
+                    {indexStatusLine(indexStatus, providerName)}
                   </p>
                 )}
 
@@ -735,6 +724,33 @@ export function AiSection({ ownerId, db }: { ownerId: string | null; db: NomaDat
                     {indexMessage}
                   </p>
                 )}
+              </>
+            )}
+          </div>
+
+          <div className="space-y-3 border-t pt-5">
+            <div className="flex items-center gap-2">
+              <Sparkles className="size-4 text-muted-foreground" aria-hidden="true" />
+              <Label>Ask Noma</Label>
+            </div>
+            {semanticCapability.mode === "none" ? (
+              <p className="text-sm text-muted-foreground">
+                Ask Noma isn't available with {providerName} — it has no embeddings service. Switch
+                to a provider with embeddings to use it.
+              </p>
+            ) : (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  Ask a question and get an answer grounded in your notes, with citations you can
+                  open to check. Asking sends the passages it finds and your question to{" "}
+                  {providerName} under your key — plus, on a follow-up, your previous question and
+                  its answer, labelled as conversation. Nothing is sent until you ask.
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Answers come from the same index as semantic search: both halves live on this
+                  device only and are never backed up or synced, locked notes are never indexed or
+                  cited, and your chats are not saved.
+                </p>
               </>
             )}
           </div>
