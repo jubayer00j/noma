@@ -8,6 +8,7 @@ import {
   effectiveVisibleBottomPx,
   keyboardHeightPx,
   NATIVE_IME_EVENT,
+  subscribeKeyboardInset,
   visibleBottomPx,
   type VisualViewportLike,
 } from "./keyboard-scroll";
@@ -283,5 +284,68 @@ describe("attachCaretAboveKeyboard", () => {
     expect(scroller.style.scrollPaddingBottom).toBe("");
     expect(scroller.scrollTop).toBe(0);
     cleanup();
+  });
+});
+
+describe("subscribeKeyboardInset", () => {
+  it("reports the native IME height as it opens and closes, without repeats", async () => {
+    const seen: number[] = [];
+    const unsubscribe = subscribeKeyboardInset((h) => seen.push(h), {
+      getViewport: () => fakeViewport(800),
+      getLayoutHeight: () => 800,
+    });
+    // Synchronous first report: no keyboard.
+    expect(seen).toEqual([0]);
+
+    window.dispatchEvent(new CustomEvent(NATIVE_IME_EVENT, { detail: 300 }));
+    await flush();
+    expect(seen).toEqual([0, 300]);
+
+    // The same height again is not re-reported.
+    window.dispatchEvent(new CustomEvent(NATIVE_IME_EVENT, { detail: 300 }));
+    await flush();
+    expect(seen).toEqual([0, 300]);
+
+    window.dispatchEvent(new CustomEvent(NATIVE_IME_EVENT, { detail: 0 }));
+    await flush();
+    expect(seen).toEqual([0, 300, 0]);
+
+    // After unsubscribe, further events change nothing.
+    unsubscribe();
+    window.dispatchEvent(new CustomEvent(NATIVE_IME_EVENT, { detail: 280 }));
+    await flush();
+    expect(seen).toEqual([0, 300, 0]);
+  });
+
+  it("falls back to the visual-viewport shrink on web", async () => {
+    const viewport = fakeViewport(800);
+    const seen: number[] = [];
+    const unsubscribe = subscribeKeyboardInset((h) => seen.push(h), {
+      getViewport: () => viewport,
+      getLayoutHeight: () => 800,
+    });
+    expect(seen).toEqual([0]);
+    viewport.height = 500;
+    viewport.emit("resize");
+    await flush();
+    expect(seen).toEqual([0, 300]);
+    unsubscribe();
+  });
+
+  it("reads the bridge at subscribe time for the keyboard-already-open case", () => {
+    (window as unknown as { NomaIme?: { getHeightCssPx: () => number } }).NomaIme = {
+      getHeightCssPx: () => 250,
+    };
+    try {
+      const seen: number[] = [];
+      const unsubscribe = subscribeKeyboardInset((h) => seen.push(h), {
+        getViewport: () => fakeViewport(800),
+        getLayoutHeight: () => 800,
+      });
+      expect(seen).toEqual([250]);
+      unsubscribe();
+    } finally {
+      delete (window as unknown as { NomaIme?: unknown }).NomaIme;
+    }
   });
 });
