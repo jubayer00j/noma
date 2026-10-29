@@ -5,24 +5,26 @@ import type {
   AttachmentMeta,
   Folder,
   Note,
+  NoteChunk,
   NoteEmbedding,
   Reminder,
   SyncTombstone,
   Tag,
 } from "./types";
 
-/* ---------------- Dexie v5 schema (#8.5) ---------------- */
+/* ---------------- Dexie v6 schema (Ask Noma chunk index) ---------------- */
 
-describe("NomaDatabase schema v5", () => {
-  it("registers version 5 with the noteEmbeddings table, keeping v4 tables", () => {
+describe("NomaDatabase schema v6", () => {
+  it("registers version 6 with the noteChunks table, keeping v5 tables", () => {
     const db = new NomaDatabase("noma_schema_probe");
-    expect(db.verno).toBe(5);
+    expect(db.verno).toBe(6);
     const versions = (
       db as unknown as {
         _versions: Array<{ _cfg: { storesSource: Record<string, string> } }>;
       }
     )._versions;
     const latest = versions[versions.length - 1]!._cfg.storesSource;
+    expect(latest["noteChunks"]).toBe("id, noteId");
     expect(latest["noteEmbeddings"]).toBe("noteId");
     // The v4 local-only history table and the core tables survive.
     expect(latest["noteVersions"]).toBe("id, noteId");
@@ -79,6 +81,7 @@ class FakeDb {
   reminders = new FakeTable<Reminder>();
   tombstones = new FakeTable<SyncTombstone>();
   noteEmbeddings = new FakeEmbeddingTable();
+  noteChunks = new FakeTable<NoteChunk>();
 
   async transaction(...args: unknown[]): Promise<void> {
     const fn = args[args.length - 1] as () => Promise<void>;
@@ -120,10 +123,22 @@ describe("copyDatabase", () => {
       contentHash: "abc123",
       updatedAt: 1,
     });
+    await source.noteChunks.put({
+      id: "n1#0",
+      noteId: "n1",
+      chunkIndex: 0,
+      providerKey: "gemini:gemini-embedding-001:2",
+      dims: 2,
+      vector: new Float32Array([0.6, 0.8]),
+      contentHash: "def456",
+      text: "Trip notes\nPack the camera.",
+      updatedAt: 1,
+    });
 
     await copyDatabase(source as unknown as NomaDatabase, target as unknown as NomaDatabase);
 
     expect(await target.notes.toArray()).toHaveLength(1);
     expect(await target.noteEmbeddings.toArray()).toEqual([]);
+    expect(await target.noteChunks.toArray()).toEqual([]);
   });
 });

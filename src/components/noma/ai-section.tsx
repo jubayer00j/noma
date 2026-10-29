@@ -661,6 +661,10 @@ export function AiSection({ ownerId, db }: { ownerId: string | null; db: NomaDat
                         indexStatus.staleCount > 0
                           ? `${indexStatus.staleCount} changed since`
                           : "up to date"
+                      }${
+                        indexStatus.chunksStaleCount > 0
+                          ? ` · Ask Noma chunks pending for ${indexStatus.chunksStaleCount} note${indexStatus.chunksStaleCount === 1 ? "" : "s"} — Update index adds them`
+                          : ""
                       }`}
                   </p>
                 )}

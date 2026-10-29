@@ -2,6 +2,14 @@
 
 All notable changes to Noma. Dates are merge dates on `main`.
 
+## 2026-10-29
+
+### Ask Noma PR-A: chunk-level semantic index (data layer) — PR #99
+
+- First of four PRs toward **Ask Noma** — grounded answers from your own notes, with citations (retrieval, generation and the Ask view land in PR-B/C/D). This PR is the data layer only: alongside the per-note vector from #8.5, each note's text is now also split into overlapping chunks (~700 chars, ~100 chars of overlap, boundaries preferred at paragraphs, then sentences — Bengali danda included — with hard splits only as a last resort) and every chunk gets its own vector, so a later answer can cite the exact passage it used instead of a whole 6,000-char note.
+- Storage is Dexie v6 (`noteChunks`, keyed `noteId#index`): derived data with exactly the v5 index's rules — local-only, never in backups, never synced, never copied by `copyDatabase`, and locked/template/trashed notes are never chunked. The same Build/Update tap maintains both halves in one pass (a changed note re-chunks only itself; an unchanged note costs no provider call), save-time maintenance keeps chunks current, and a pre-chunk index reads honestly in Settings as "Ask Noma chunks pending" until one Update backfills it — without re-embedding any note vector whose hash still matches. Because chunk rows hold plain text, every invalidation path was audited and extended: locking, delete-forever, tombstone merges, backup restore and imports all purge a note's chunks with its vector.
+- Proof: fourteen new tests — chunking (determinism, title-first, sentence-boundary packing, overlap, hard-split cap, EMBED_MAX_CHARS ceiling), the chunk lifecycle (rows keyed and hashed at build, pre-chunk backfill without vector re-embeds, re-chunk only the changed note, a build cancelled mid-chunk-phase leaving vectors complete and chunks honestly pending), purge proofs (note lock, restore/merge, tombstones), and local-only sentinels (backup payload, sync snapshot, copyDatabase). Full suite green at 654.
+
 ## 2026-10-26
 
 ### Search snippets keep list markers — PR #98

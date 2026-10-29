@@ -447,11 +447,14 @@ export async function applyTombstones(
         db.attachments,
         db.reminders,
         db.noteEmbeddings,
+        db.noteChunks,
         async () => {
           await db.attachments.where("noteId").equals(id).delete();
           await db.reminders.where("noteId").equals(id).delete();
-          // The note's semantic vector dies with it (semantic.ts).
+          // The note's semantic vector dies with it (semantic.ts) —
+          // and so do its Ask Noma chunk rows, which hold plain text.
           if (db.noteEmbeddings) await db.noteEmbeddings.delete(id);
+          if (db.noteChunks) await db.noteChunks.where("noteId").equals(id).delete();
           await db.notes.delete(id);
         },
       );
