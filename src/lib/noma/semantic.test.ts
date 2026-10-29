@@ -14,6 +14,7 @@ import {
   embeddedTextForNote,
   fnv1a,
   getIndexStatus,
+  indexStatusLine,
   invalidateMismatchedVectors,
   invalidateNoteVector,
   maintainSemanticIndexForNote,
@@ -1073,5 +1074,79 @@ describe("chunk index lifecycle", () => {
     expect(sent).toHaveLength(3);
     // The ~1,600-char whole-note vector text was never resent.
     expect(sent.every((text) => text.length < 1000)).toBe(true);
+  });
+});
+
+describe("indexStatusLine", () => {
+  const base = {
+    staleCount: 0,
+    embeddingModel: null as string | null,
+    chunkCount: 0,
+    chunksStaleCount: 0,
+  };
+
+  it("not-built names the provider and discloses the chunk sends too", () => {
+    expect(indexStatusLine({ ...base, state: "not-built", indexedCount: 0 }, "Google Gemini")).toBe(
+      "No search index yet. Building one sends each note's text to Google Gemini under your key — once per note, and again in small overlapping chunks for Ask Noma — and keeps the index on this device only.",
+    );
+  });
+
+  it("invalid-provider names the stored model and covers Ask as well as search", () => {
+    expect(
+      indexStatusLine(
+        {
+          ...base,
+          state: "invalid-provider",
+          indexedCount: 4,
+          embeddingModel: "text-embedding-3-small",
+        },
+        "OpenAI",
+      ),
+    ).toBe(
+      "The index on this device was built with text-embedding-3-small — rebuild it to use semantic search and Ask Noma with the current provider. Search stays keyword-only until then.",
+    );
+    expect(
+      indexStatusLine({ ...base, state: "invalid-provider", indexedCount: 4 }, "OpenAI"),
+    ).toContain("built with a different embedding model");
+  });
+
+  it("ready counts both tables — notes and passages — when up to date", () => {
+    expect(
+      indexStatusLine(
+        {
+          ...base,
+          state: "ready",
+          indexedCount: 13,
+          embeddingModel: "gemini-embedding-001",
+          chunkCount: 41,
+        },
+        "Google Gemini",
+      ),
+    ).toBe("Indexed 13 notes · 41 passages · gemini-embedding-001 · up to date");
+  });
+
+  it("ready keeps the singular forms and the unknown-model fallback", () => {
+    expect(
+      indexStatusLine({ ...base, state: "ready", indexedCount: 1, chunkCount: 1 }, "Google Gemini"),
+    ).toBe("Indexed 1 note · 1 passage · unknown model · up to date");
+  });
+
+  it("ready reports changed notes and pending chunks after the counts", () => {
+    expect(
+      indexStatusLine(
+        {
+          ...base,
+          state: "ready",
+          indexedCount: 13,
+          embeddingModel: "gemini-embedding-001",
+          chunkCount: 0,
+          staleCount: 2,
+          chunksStaleCount: 13,
+        },
+        "Google Gemini",
+      ),
+    ).toBe(
+      "Indexed 13 notes · 0 passages · gemini-embedding-001 · 2 changed since · Ask Noma chunks pending for 13 notes — Update index adds them",
+    );
   });
 });

@@ -618,6 +618,30 @@ export async function getIndexStatus(
   };
 }
 
+/**
+ * The one-line index status Settings shows, as a pure derivation so
+ * the wording is testable without the component. It covers BOTH
+ * tables honestly — note vectors (semantic search) and passage
+ * chunks (Ask Noma) — with counts only: the index's byte size is
+ * never computed anywhere, so the line never invents one.
+ */
+export function indexStatusLine(status: SemanticIndexStatus, providerName: string): string {
+  switch (status.state) {
+    case "not-built":
+      return `No search index yet. Building one sends each note's text to ${providerName} under your key — once per note, and again in small overlapping chunks for Ask Noma — and keeps the index on this device only.`;
+    case "invalid-provider":
+      return `The index on this device was built with ${status.embeddingModel ?? "a different embedding model"} — rebuild it to use semantic search and Ask Noma with the current provider. Search stays keyword-only until then.`;
+    case "ready": {
+      const line = `Indexed ${status.indexedCount} note${status.indexedCount === 1 ? "" : "s"} · ${status.chunkCount} passage${status.chunkCount === 1 ? "" : "s"} · ${status.embeddingModel ?? "unknown model"} · ${
+        status.staleCount > 0 ? `${status.staleCount} changed since` : "up to date"
+      }`;
+      return status.chunksStaleCount > 0
+        ? `${line} · Ask Noma chunks pending for ${status.chunksStaleCount} note${status.chunksStaleCount === 1 ? "" : "s"} — Update index adds them`
+        : line;
+    }
+  }
+}
+
 /* ---------------- Vector invalidation (direct-write paths) ----------------
  * Several modules write db.notes directly, bypassing updateNote's save
  * hook: note locking/unlocking (note-lock.ts), version restores
