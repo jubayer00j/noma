@@ -294,9 +294,13 @@ export function buildAskPrompt(
  * excerpts actually sent: an out-of-range number is a hallucination
  * and is stripped from the text, never rendered; valid citations are
  * returned deduplicated in first-use order, mapped back to their
- * source note + chunk. The text is otherwise the model's own words —
- * rendering it safely is the view's job (PR-C), exactly as with
- * summaries.
+ * source note + chunk. A reply with NO valid citation at all is not
+ * an answer either: Ask's promise is grounded-or-silent, and text the
+ * model produced without citing any excerpt it was given is
+ * indistinguishable from an ungrounded invention, so it degrades to
+ * the same refusal the view renders honestly. The text is otherwise
+ * the model's own words — rendering it safely is the view's job
+ * (PR-C), exactly as with summaries.
  */
 export function parseAskAnswer(raw: string, excerpts: AskExcerpt[]): ParsedAskAnswer {
   const normalized = raw.trim().replace(/\s+/g, " ");
@@ -317,5 +321,6 @@ export function parseAskAnswer(raw: string, excerpts: AskExcerpt[]): ParsedAskAn
     })
     .replace(/[ \t]{2,}/g, " ")
     .trim();
+  if (citations.length === 0) return { status: "refusal" };
   return { status: "answer", text, citations };
 }

@@ -484,4 +484,16 @@ describe("parseAskAnswer", () => {
     );
     expect(result.status).toBe("answer");
   });
+
+  it("treats a reply with no citations at all as a refusal, not an answer", () => {
+    expect(parseAskAnswer("The meeting is on Tuesday at ten.", excerpts)).toEqual({
+      status: "refusal",
+    });
+  });
+
+  it("treats a reply whose only citations are hallucinated as a refusal", () => {
+    expect(parseAskAnswer("It is in the third note [9], see also [0].", excerpts)).toEqual({
+      status: "refusal",
+    });
+  });
 });
