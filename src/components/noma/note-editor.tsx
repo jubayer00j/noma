@@ -25,8 +25,11 @@ import {
   BarChart2,
   Plus,
   Trash2,
+  Mic,
+  Loader2,
+  X,
 } from "lucide-react";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -48,7 +51,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
-import type { Note } from "@/lib/noma/types";
+import type { Note, SpeechLanguageSetting } from "@/lib/noma/types";
+import {
+  createSpeechSession,
+  defaultSpeechEngine,
+  dictationInsertionText,
+  resolveSpeechLanguageTag,
+  type SpeechErrorKind,
+  type SpeechSessionSnapshot,
+} from "@/lib/noma/speech";
 import { useDatabase } from "@/lib/noma/DatabaseContext";
 import { saveImageAttachment, scheduleDebouncedAttachmentCleanup } from "@/lib/noma/media";
 import { ChartEditorDialog, type AdvancedChartData } from "./chart-node";
@@ -63,9 +74,25 @@ interface NoteEditorProps {
   fontSize: number;
   editorWidth: number;
   lineHeight: number;
+  /** Dictation language for voice capture; defaults to the system language. */
+  speechLanguage?: SpeechLanguageSetting;
   /** Candidates for the `[[` note-link picker; omit to disable inserting links. */
   noteLinkItems?: (query: string) => NoteLinkItem[];
 }
+
+/** Calm one-liners for the dictation strip, one per error kind. */
+const SPEECH_ERROR_LINES: Record<SpeechErrorKind, string> = {
+  permission: "Microphone access was denied — you can allow it in your device settings.",
+  unavailable: "Voice capture isn't available on this device.",
+  "no-speech": "Didn't catch that — try again, a little closer to the mic.",
+  "no-match": "Didn't catch that — try again.",
+  "speech-timeout": "Didn't catch that — try again.",
+  network: "The speech service needs a connection on this device.",
+  audio: "The microphone couldn't be read.",
+  busy: "The recogniser is busy — try again in a moment.",
+  server: "The speech service had a problem — try again.",
+  client: "Voice capture stopped unexpectedly.",
+};
 
 function ToolbarButton({
   onClick,
@@ -80,7 +107,7 @@ function ToolbarButton({
   disabled?: boolean;
   label: string;
   children: React.ReactNode;
-  className?: string;
+  className?: string | undefined;
 }) {
   return (
     <button
@@ -475,6 +502,7 @@ export function NoteEditor({
   fontSize,
   editorWidth,
   lineHeight,
+  speechLanguage = "system",
   noteLinkItems,
 }: NoteEditorProps) {
   const { db } = useDatabase();
@@ -554,6 +582,76 @@ export function NoteEditor({
     if (!(scroller instanceof HTMLElement)) return;
     return attachCaretAboveKeyboard(editor, scroller);
   }, [editor]);
+
+  // Voice capture (PR-B): one speech session per editor mount. The
+  // workspace keys this component by note id, so a note switch, an App
+  // Lock or leaving edit mode unmounts it — the cleanup cancels the
+  // session, and no transcript can leak across notes. The mic is only
+  // offered once the engine probe says a recogniser exists.
+  const speechRuntime = useMemo(() => {
+    const engine = defaultSpeechEngine();
+    return engine ? { engine, session: createSpeechSession(engine) } : null;
+  }, []);
+  const [speechAvailable, setSpeechAvailable] = useState(false);
+  const [speechSnapshot, setSpeechSnapshot] = useState<SpeechSessionSnapshot | null>(null);
+  const insertedSegmentsRef = useRef(0);
+
+  useEffect(() => {
+    if (!speechRuntime) return;
+    let live = true;
+    speechRuntime.engine
+      .probe()
+      .then((probe) => {
+        if (live) setSpeechAvailable(probe.available);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [speechRuntime]);
+
+  useEffect(() => {
+    if (!speechRuntime) return;
+    const { session } = speechRuntime;
+    setSpeechSnapshot(session.getSnapshot());
+    const unsubscribe = session.subscribe(setSpeechSnapshot);
+    return () => {
+      unsubscribe();
+      session.cancel();
+    };
+  }, [speechRuntime]);
+
+  // Committed finals land at the caret, in order, exactly once each.
+  useEffect(() => {
+    if (!editor || !speechSnapshot) return;
+    const committed = speechSnapshot.committed;
+    while (insertedSegmentsRef.current < committed.length) {
+      const segment = committed[insertedSegmentsRef.current];
+      insertedSegmentsRef.current += 1;
+      if (!segment) continue;
+      const { from } = editor.state.selection;
+      const beforeChar = from > 0 ? editor.state.doc.textBetween(from - 1, from) : "";
+      const text = dictationInsertionText(beforeChar, segment);
+      if (text) editor.chain().focus().insertContent(text).run();
+    }
+  }, [editor, speechSnapshot]);
+
+  const toggleDictation = () => {
+    if (!speechRuntime) return;
+    const { session } = speechRuntime;
+    const state = session.getSnapshot().state;
+    if (state === "listening") {
+      session.stop();
+    } else if (state === "idle" || state === "error") {
+      void session.start(resolveSpeechLanguageTag(speechLanguage, navigator.language));
+    }
+  };
+
+  const dismissSpeechError = () => {
+    if (!speechRuntime) return;
+    insertedSegmentsRef.current = 0;
+    speechRuntime.session.reset();
+  };
 
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
@@ -647,6 +745,29 @@ export function NoteEditor({
               ) : (
                 <span className="px-1 text-xs text-muted-foreground">Formatting hidden</span>
               )}
+              {speechAvailable && speechSnapshot && (
+                <ToolbarButton
+                  label={speechSnapshot.state === "listening" ? "Stop dictation" : "Dictate"}
+                  active={speechSnapshot.state === "listening"}
+                  disabled={
+                    speechSnapshot.state === "requesting-permission" ||
+                    speechSnapshot.state === "stopping"
+                  }
+                  onClick={toggleDictation}
+                  className={
+                    speechSnapshot.state === "listening"
+                      ? "text-destructive hover:text-destructive"
+                      : undefined
+                  }
+                >
+                  {speechSnapshot.state === "requesting-permission" ||
+                  speechSnapshot.state === "stopping" ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Mic className="size-4" />
+                  )}
+                </ToolbarButton>
+              )}
               <Button
                 variant="ghost"
                 size="sm"
@@ -656,6 +777,40 @@ export function NoteEditor({
                 {showToolbar ? "Hide" : "Format"}
               </Button>
             </div>
+            {speechSnapshot && speechSnapshot.state !== "idle" && (
+              <div className="flex items-center gap-2 px-1 pt-1 text-xs" aria-live="polite">
+                {speechSnapshot.state === "error" ? (
+                  <>
+                    <span className="text-destructive">
+                      {SPEECH_ERROR_LINES[speechSnapshot.errorKind ?? "client"]}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={dismissSpeechError}
+                      aria-label="Dismiss"
+                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                    >
+                      <X className="size-3.5" />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span
+                      className={cn(
+                        "size-2 shrink-0 rounded-full",
+                        speechSnapshot.state === "listening"
+                          ? "animate-pulse bg-destructive"
+                          : "bg-muted-foreground/50",
+                      )}
+                    />
+                    <span className="truncate text-muted-foreground italic">
+                      {speechSnapshot.partial ||
+                        (speechSnapshot.state === "listening" ? "Listening…" : "…")}
+                    </span>
+                  </>
+                )}
+              </div>
+            )}
             <ContextualTableBar editor={editor} />
           </div>
 

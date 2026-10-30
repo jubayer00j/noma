@@ -125,7 +125,7 @@ import {
   setDailyDefault,
 } from "@/lib/noma/templates";
 import { saveLockedNoteContent, type UnlockedNoteData } from "@/lib/noma/note-lock";
-import type { Folder, Note, Reminder, Tag } from "@/lib/noma/types";
+import type { Folder, Note, Reminder, SpeechLanguageSetting, Tag } from "@/lib/noma/types";
 import { filterNotes, viewTitle, type ViewState } from "@/lib/noma/view";
 import { cn } from "@/lib/utils";
 
@@ -338,6 +338,7 @@ interface WorkspaceSurfacesProps {
   fontSize: number;
   editorWidth: number;
   lineHeight: number;
+  speechLanguage: SpeechLanguageSetting;
 }
 
 /**
@@ -383,6 +384,7 @@ export function WorkspaceSurfaces({
   fontSize,
   editorWidth,
   lineHeight,
+  speechLanguage,
 }: WorkspaceSurfacesProps) {
   const noteOpen = activeNote != null;
   const sessionForActive = activeNote && noteSession?.noteId === activeNote.id ? noteSession : null;
@@ -483,6 +485,7 @@ export function WorkspaceSurfaces({
                   fontSize={fontSize}
                   editorWidth={editorWidth}
                   lineHeight={lineHeight}
+                  speechLanguage={speechLanguage}
                   noteLinkItems={noteLinkItems}
                 />
               )}
@@ -1767,6 +1770,7 @@ export function Workspace() {
           fontSize={settings.fontSize}
           editorWidth={settings.editorWidth}
           lineHeight={settings.lineHeight}
+          speechLanguage={settings.speechLanguage}
         />
       </main>
 

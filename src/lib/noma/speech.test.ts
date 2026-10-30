@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   appendFinalSegment,
   createSpeechSession,
+  dictationInsertionText,
   dictationJoin,
   INITIAL_SPEECH_SESSION,
   MAX_SOFT_MISSES,
@@ -60,6 +61,19 @@ describe("transcript assembly", () => {
     expect(dictationJoin("hello ", "world")).toBe("hello world");
     expect(dictationJoin("hello", "world")).toBe("hello world");
     expect(dictationJoin("hello", "  ")).toBe("hello");
+  });
+
+  it("dictationInsertionText returns only the text to insert at the caret", () => {
+    // Nothing before the caret (document or block start): no space.
+    expect(dictationInsertionText("", "hello")).toBe("hello");
+    // A block separator before the caret reads as nothing before.
+    expect(dictationInsertionText("\n", "hello")).toBe("hello");
+    // Whitespace before: no extra space.
+    expect(dictationInsertionText(" ", "world")).toBe("world");
+    // A letter before: exactly one leading space.
+    expect(dictationInsertionText("o", "world")).toBe(" world");
+    // A wordless segment inserts nothing.
+    expect(dictationInsertionText("o", "   ")).toBe("");
   });
 });
 

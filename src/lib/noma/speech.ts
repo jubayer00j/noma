@@ -1,4 +1,7 @@
 import { Capacitor, registerPlugin } from "@capacitor/core";
+import type { SpeechLanguageSetting } from "./types";
+
+export type { SpeechLanguageSetting };
 
 /**
  * Voice capture (PR-A: the engine). Everything above the platform
@@ -25,8 +28,7 @@ import { Capacitor, registerPlugin } from "@capacitor/core";
 
 /* ---------------- Language ---------------- */
 
-/** The Settings choice (PR-B wires the control; resolution lives here). */
-export type SpeechLanguageSetting = "system" | "en" | "bn";
+/** The Settings choice lives in types.ts (AppSettings); resolution here. */
 
 /**
  * Resolve the setting to the BCP-47 tag handed to the recogniser.
@@ -81,6 +83,18 @@ export function dictationJoin(before: string, segment: string): string {
   if (!trimmed) return before;
   if (!before || /\s$/.test(before)) return before + trimmed;
   return `${before} ${trimmed}`;
+}
+
+/**
+ * The text to insert at the caret for one final segment, given the
+ * single character before the caret ("" at a document/block start,
+ * where textBetween reports nothing or a block separator — both read
+ * as "nothing before", so no leading space). Returns "" when the
+ * segment carries no words.
+ */
+export function dictationInsertionText(beforeChar: string, segment: string): string {
+  const probe = beforeChar.slice(-1);
+  return dictationJoin(probe, segment).slice(probe.length);
 }
 
 /* ---------------- Session state machine ---------------- */

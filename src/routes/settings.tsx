@@ -58,6 +58,7 @@ import {
 import { DriveCard } from "@/components/noma/drive-card";
 import { ImportSection } from "@/components/noma/import-section";
 import { AiSection } from "@/components/noma/ai-section";
+import { VoiceSection } from "@/components/noma/voice-section";
 import { AppLockSection } from "@/components/noma/app-lock-section";
 import { BackupEncryptionSection } from "@/components/noma/backup-encryption-section";
 import { ThemePicker, THEME_OPTIONS } from "@/components/noma/theme-picker";
@@ -610,6 +611,8 @@ export function SettingsPage({
                 }
               />
             </div>
+
+            <VoiceSection />
           </div>
         </div>
 
