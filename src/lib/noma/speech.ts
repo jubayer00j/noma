@@ -245,8 +245,10 @@ export type SpeechUnavailableReason = "service-disabled";
  * service is reported WITH the reason and the app's label. When no
  * on-device recogniser exists that makes the probe unavailable and
  * the UI stops offering the mic; when one does, the mic stays
- * offered and the reason rides along as an advisory, so a runtime
- * fallback failure can still be named honestly. */
+ * offered and the reason rides along as an advisory (the Settings
+ * heads-up). Naming a runtime failure is NOT built on the advisory:
+ * only the plugin knows which recogniser actually ran, so the
+ * plugin itself reports a dead-service start as "service-disabled". */
 export interface SpeechProbe {
   available: boolean;
   onDevice: boolean;
@@ -295,6 +297,11 @@ const NATIVE_ERROR_KINDS: ReadonlySet<string> = new Set([
   "busy",
   "server",
   "client",
+  // Emitted by the plugin itself (not a platform error code) when
+  // the only recogniser it could create belongs to a disabled
+  // service — a determination only the plugin can make, since only
+  // it knows which recogniser actually ran.
+  "service-disabled",
 ]);
 
 function nativeErrorKind(kind: string | undefined): SpeechErrorKind {
@@ -495,12 +502,6 @@ export interface SpeechSession {
 export function createSpeechSession(engine: SpeechEngine): SpeechSession {
   let snapshot: SpeechSessionSnapshot = INITIAL_SPEECH_SESSION;
   let languageTag = "en-US";
-  // Set by start() from the probe: the platform service is disabled
-  // but an on-device recogniser kept the session viable. A generic
-  // client/server death under this advisory almost certainly means
-  // on-device creation failed and the engine fell back to the dead
-  // service — onError names it instead of the generic kind.
-  let fallbackServiceDisabled = false;
   let restartQueued = false;
   const listeners = new Set<(snapshot: SpeechSessionSnapshot) => void>();
 
@@ -531,11 +532,7 @@ export function createSpeechSession(engine: SpeechEngine): SpeechSession {
       maybeRestart();
     },
     onError: (kind) => {
-      const effective =
-        fallbackServiceDisabled && (kind === "client" || kind === "server")
-          ? "service-disabled"
-          : kind;
-      dispatch({ type: "engine-error", kind: effective });
+      dispatch({ type: "engine-error", kind });
       maybeRestart();
     },
   };
@@ -565,7 +562,6 @@ export function createSpeechSession(engine: SpeechEngine): SpeechSession {
         dispatch({ type: "unavailable" });
         return;
       }
-      fallbackServiceDisabled = probe.reason === "service-disabled";
       const granted = await engine.ensurePermission().catch(() => false);
       if (!stillRequesting()) return;
       if (!granted) {
