@@ -62,6 +62,7 @@ export function VoiceCaptureSheet({
   onTypeInstead,
 }: VoiceCaptureSheetProps) {
   const [availability, setAvailability] = useState<"checking" | "ok" | "unavailable">("checking");
+  const [blockedApp, setBlockedApp] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<SpeechSessionSnapshot | null>(null);
   const [pendingSave, setPendingSave] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -79,6 +80,7 @@ export function VoiceCaptureSheet({
   useEffect(() => {
     if (!open) return;
     setAvailability("checking");
+    setBlockedApp(null);
     setSnapshot(null);
     setPendingSave(false);
     setSubmitted(false);
@@ -101,6 +103,7 @@ export function VoiceCaptureSheet({
       .then((probe) => {
         if (!live) return;
         if (!probe.available) {
+          if (probe.reason === "service-disabled") setBlockedApp(probe.serviceApp ?? "");
           setAvailability("unavailable");
           return;
         }
@@ -222,8 +225,18 @@ export function VoiceCaptureSheet({
         ) : availability === "unavailable" ? (
           <div className="space-y-4 py-2">
             <p className="text-sm text-muted-foreground">
-              No speech recogniser is available on this device or browser, so voice capture
-              can&apos;t run here.
+              {blockedApp !== null ? (
+                <>
+                  Your phone&apos;s speech service{blockedApp ? ` — ${blockedApp} —` : ""} is
+                  disabled, so dictation can&apos;t run. Enable it, or choose a different voice
+                  input in your system settings, to use voice capture.
+                </>
+              ) : (
+                <>
+                  No speech recogniser is available on this device or browser, so voice capture
+                  can&apos;t run here.
+                </>
+              )}
             </p>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => onOpenChange(false)}>

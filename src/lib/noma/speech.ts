@@ -236,6 +236,20 @@ export interface SpeechEngineHandlers {
   onError: (kind: SpeechErrorKind) => void;
 }
 
+/** Why no recogniser can run, when the platform can say (native probe). */
+export type SpeechUnavailableReason = "service-disabled";
+
+/** What an engine probe reports. The reason fields are the native
+ * probe's honesty pass: a registered-but-disabled default speech
+ * service reports unavailable WITH the reason and the app's label,
+ * so the UI can explain instead of offering a mic that can't work. */
+export interface SpeechProbe {
+  available: boolean;
+  onDevice: boolean;
+  reason?: SpeechUnavailableReason | null;
+  serviceApp?: string | null;
+}
+
 /**
  * One engine = one platform recogniser. start() runs a single
  * utterance; the controller restarts it for continuous dictation.
@@ -243,7 +257,7 @@ export interface SpeechEngineHandlers {
  * end; cancel() abandons it silently.
  */
 export interface SpeechEngine {
-  probe: () => Promise<{ available: boolean; onDevice: boolean }>;
+  probe: () => Promise<SpeechProbe>;
   ensurePermission: () => Promise<boolean>;
   start: (languageTag: string, handlers: SpeechEngineHandlers) => void | Promise<void>;
   stop: () => void | Promise<void>;
@@ -251,7 +265,7 @@ export interface SpeechEngine {
 }
 
 interface NomaSpeechPluginInterface {
-  isAvailable(): Promise<{ available: boolean; onDevice: boolean }>;
+  isAvailable(): Promise<SpeechProbe>;
   ensureMicrophoneAccess(): Promise<{ granted: boolean }>;
   startListening(options: { language: string }): Promise<void>;
   stopListening(): Promise<void>;
