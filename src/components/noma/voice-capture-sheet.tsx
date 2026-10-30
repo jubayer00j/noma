@@ -64,9 +64,11 @@ export function VoiceCaptureSheet({
   const [availability, setAvailability] = useState<"checking" | "ok" | "unavailable">("checking");
   const [snapshot, setSnapshot] = useState<SpeechSessionSnapshot | null>(null);
   const [pendingSave, setPendingSave] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
   const [emptyNotice, setEmptyNotice] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const sessionRef = useRef<SpeechSession | null>(null);
+  const submittedRef = useRef(false);
   const listeningSinceRef = useRef<number | null>(null);
   const onSaveRef = useRef(onSave);
   useEffect(() => {
@@ -79,6 +81,8 @@ export function VoiceCaptureSheet({
     setAvailability("checking");
     setSnapshot(null);
     setPendingSave(false);
+    setSubmitted(false);
+    submittedRef.current = false;
     setEmptyNotice(false);
     setElapsed(0);
     listeningSinceRef.current = null;
@@ -133,6 +137,11 @@ export function VoiceCaptureSheet({
   }, [snapshot]);
 
   const finishAndSave = () => {
+    // Repeat-submission guard: the workspace's save is async (it
+    // awaits the note write before closing the sheet), so without
+    // this a quick second tap in that window would create the note
+    // twice. The ref makes the guard synchronous, not render-timed.
+    if (submittedRef.current) return;
     const session = sessionRef.current;
     if (!session) return;
     const segments = session.getSnapshot().committed;
@@ -140,6 +149,8 @@ export function VoiceCaptureSheet({
       setEmptyNotice(true);
       return;
     }
+    submittedRef.current = true;
+    setSubmitted(true);
     onSaveRef.current(
       voiceNoteTitle(segments),
       plainTextToNoteHtml(segmentsToParagraphs(segments)),
@@ -158,6 +169,7 @@ export function VoiceCaptureSheet({
   }, [pendingSave, snapshot]);
 
   const handleDone = () => {
+    if (submittedRef.current) return;
     const session = sessionRef.current;
     if (!session) return;
     const state = session.getSnapshot().state;
@@ -282,17 +294,20 @@ export function VoiceCaptureSheet({
               </div>
             ) : (
               <div className="flex flex-wrap justify-end gap-2">
-                <Button variant="ghost" onClick={() => onOpenChange(false)}>
+                <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={submitted}>
                   Cancel
                 </Button>
-                <Button variant="outline" onClick={handleTypeInstead}>
+                <Button variant="outline" onClick={handleTypeInstead} disabled={submitted}>
                   Type instead
                 </Button>
                 <Button
                   className="noma-cta"
                   onClick={handleDone}
                   disabled={
-                    state === "requesting-permission" || state === "stopping" || pendingSave
+                    submitted ||
+                    state === "requesting-permission" ||
+                    state === "stopping" ||
+                    pendingSave
                   }
                 >
                   {state === "listening" ? "Done" : "Save note"}
