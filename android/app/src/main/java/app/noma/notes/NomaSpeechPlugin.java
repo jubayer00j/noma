@@ -156,12 +156,23 @@ public class NomaSpeechPlugin extends Plugin {
         destroyRecognizer();
         final int gen = ++generation;
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+            SpeechRecognizer created = null;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
                 && SpeechRecognizer.isOnDeviceRecognitionAvailable(getContext())) {
-                recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(getContext());
-            } else {
-                recognizer = SpeechRecognizer.createSpeechRecognizer(getContext());
+                try {
+                    created = SpeechRecognizer.createOnDeviceSpeechRecognizer(getContext());
+                } catch (Exception e) {
+                    // The probe said on-device exists but creation
+                    // failed (quirky OEM build) — fall through to the
+                    // platform recogniser rather than failing the
+                    // session. The Settings disclosure keys off the
+                    // same probe, so the two stay aligned.
+                    Log.w(TAG, "on-device recogniser creation failed; using platform recogniser", e);
+                }
             }
+            recognizer = created != null
+                ? created
+                : SpeechRecognizer.createSpeechRecognizer(getContext());
         } catch (Exception e) {
             Log.w(TAG, "createSpeechRecognizer failed", e);
             emitError(gen, SpeechRecognizer.ERROR_CLIENT);
