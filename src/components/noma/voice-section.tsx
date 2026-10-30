@@ -64,11 +64,15 @@ export function VoiceSection() {
       </div>
 
       <p className="text-sm text-muted-foreground">
-        Dictate into any note with the mic in the editor toolbar. Speech is recognised by your
-        device&apos;s speech service —{" "}
-        {onDevice
-          ? "on this device it can run fully on-device. "
-          : "on this device that service (usually Google&apos;s) may process your speech online. "}
+        Dictate into any note with the mic in the editor toolbar.{" "}
+        {availability === "available" && (
+          <>
+            Speech is recognised by your device&apos;s speech service —{" "}
+            {onDevice
+              ? "on this device it can run fully on-device. "
+              : "on this device that service (usually Google's) may process your speech online. "}
+          </>
+        )}
         Noma never stores audio; only the words you dictate are kept, as note text.
       </p>
 
