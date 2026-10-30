@@ -89,14 +89,20 @@ public class NomaSpeechPlugin extends Plugin {
         // app), createSpeechRecognizer still binds to it and every
         // session dies instantly with a generic error. Detect that
         // here so the web layer can stop offering a dead mic and say
-        // why. Skipped when an on-device recogniser exists: start
-        // prefers it, so the session may still be viable.
-        if (available && !onDevice) {
+        // why. With an on-device recogniser the mic stays offered —
+        // start prefers it — but the reason still rides along as an
+        // advisory: if on-device creation fails at runtime, start
+        // falls back to this same dead service, and the session layer
+        // uses the advisory to name that failure instead of showing
+        // the generic line.
+        if (available) {
             String disabledApp = disabledDefaultServiceApp();
             if (disabledApp != null) {
-                res.put("available", false);
                 res.put("reason", "service-disabled");
                 res.put("serviceApp", disabledApp);
+                if (!onDevice) {
+                    res.put("available", false);
+                }
             }
         }
         call.resolve(res);

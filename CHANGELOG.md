@@ -34,6 +34,12 @@ All notable changes to Noma. Dates are merge dates on `main`.
 - The web layer carries the reason through the probe contract (`SpeechProbe.reason` / `serviceApp`). Everywhere already keys off `available`, so the editor mic, the sidebar door and the sheet stop offering a dead mic on their own; the two surfaces that can still be *told* about it — Settings → Writing → Voice capture and the sheet's unavailable state (reachable from the QS tile) — now explain it in plain words: the service is disabled, naming the app, with the way back (enable it, or choose a different voice input in system settings). Deliberately not in scope: switching engines — dictation still rides the platform recogniser, by the owner's call.
 - Proof: new `VoiceSection` tests pin all three copy branches (disabled-with-name, generic unavailable, available disclosure). Full suite green; build-android compiles the plugin change.
 
+### Voice probe follow-up: the on-device fallback keeps the probe's promise (Codex P2 on the probe fix)
+
+- The probe fix skipped its disabled-service check whenever an on-device recogniser was reported — but `startOnMain` falls back to the platform recogniser when on-device *creation* throws, so on exactly that path the mic was still offered on the strength of a service known to be dead, and the failure surfaced as the generic line again. The probe now always computes the disabled service: without an on-device recogniser it still flips availability off; with one, the verdict stays available and the reason rides along as an **advisory** on the probe contract.
+- The session layer spends the advisory where it matters: `createSpeechSession` remembers it from the start probe, and a generic client/server engine death under the advisory is surfaced as the new `service-disabled` error kind — "Your phone's speech service is disabled, so dictation can't run" in both the editor strip and the sheet — while unrelated kinds (network, audio, …) keep their own meaning. Settings gains the matching heads-up in the available state: dictation here relies on the on-device recogniser because the online service is disabled.
+- Proof: session tests pin the substitution (advisory + client → service-disabled; advisory + network → network; no advisory + client → client) and a fourth `VoiceSection` test pins the heads-up branch. Full suite green; build-android compiles the plugin change.
+
 ## 2026-10-29
 ### Ask Noma PR-A: chunk-level semantic index (data layer) — PR #99
 

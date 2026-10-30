@@ -179,13 +179,27 @@ describe("speechSessionReducer", () => {
 
 /* ---------------- Controller, driven by a fake engine ---------------- */
 
-function fakeEngine(opts: { available?: boolean; permission?: boolean } = {}) {
+function fakeEngine(
+  opts: {
+    available?: boolean;
+    permission?: boolean;
+    onDevice?: boolean;
+    probeReason?: "service-disabled";
+    serviceApp?: string;
+  } = {},
+) {
   const calls = { probe: 0, ensure: 0, start: 0, stop: 0, cancel: 0 };
   let handlers: SpeechEngineHandlers | null = null;
   const engine: SpeechEngine = {
     probe: async () => {
       calls.probe++;
-      return { available: opts.available ?? true, onDevice: false };
+      return {
+        available: opts.available ?? true,
+        onDevice: opts.onDevice ?? false,
+        ...(opts.probeReason
+          ? { reason: opts.probeReason, serviceApp: opts.serviceApp ?? null }
+          : {}),
+      };
     },
     ensurePermission: async () => {
       calls.ensure++;
@@ -237,6 +251,39 @@ describe("createSpeechSession", () => {
     await session.start("en-US");
     expect(session.getSnapshot()).toMatchObject({ state: "error", errorKind: "permission" });
     expect(calls.start).toBe(0);
+  });
+
+  it("under the disabled-service advisory, a generic engine death is named service-disabled", async () => {
+    const { engine, emit } = fakeEngine({
+      onDevice: true,
+      probeReason: "service-disabled",
+      serviceApp: "Google",
+    });
+    const session = createSpeechSession(engine);
+    await session.start("en-US");
+    expect(session.getSnapshot().state).toBe("listening");
+    emit().onError("client");
+    expect(session.getSnapshot()).toMatchObject({ state: "error", errorKind: "service-disabled" });
+  });
+
+  it("under the advisory, unrelated errors keep their own kind", async () => {
+    const { engine, emit } = fakeEngine({
+      onDevice: true,
+      probeReason: "service-disabled",
+      serviceApp: "Google",
+    });
+    const session = createSpeechSession(engine);
+    await session.start("en-US");
+    emit().onError("network");
+    expect(session.getSnapshot()).toMatchObject({ state: "error", errorKind: "network" });
+  });
+
+  it("without the advisory, a client error stays client", async () => {
+    const { engine, emit } = fakeEngine();
+    const session = createSpeechSession(engine);
+    await session.start("en-US");
+    emit().onError("client");
+    expect(session.getSnapshot()).toMatchObject({ state: "error", errorKind: "client" });
   });
 
   it("partials and finals flow into the snapshot", async () => {

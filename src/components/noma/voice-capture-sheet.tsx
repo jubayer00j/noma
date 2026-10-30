@@ -35,6 +35,7 @@ const ERROR_LINES: Partial<Record<SpeechErrorKind, string>> = {
   permission: "Microphone access was denied — you can allow it in your device settings.",
   network: "The speech service needs a connection on this device.",
   unavailable: "Voice capture isn't available on this device.",
+  "service-disabled": "Your phone's speech service is disabled, so dictation can't run.",
   "no-speech": "Didn't catch that.",
 };
 
