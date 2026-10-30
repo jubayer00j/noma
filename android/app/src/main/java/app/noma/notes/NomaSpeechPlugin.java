@@ -119,6 +119,10 @@ public class NomaSpeechPlugin extends Plugin {
     public void startListening(PluginCall call) {
         String language = call.getString("language");
         mainHandler.post(() -> startOnMain(language));
+        // The call settles immediately: recognition itself is
+        // event-driven, and speech.ts awaits this promise — leaving it
+        // pending would hang that await and leak a call per restart.
+        call.resolve();
     }
 
     @PluginMethod
@@ -132,11 +136,13 @@ public class NomaSpeechPlugin extends Plugin {
                 }
             }
         });
+        call.resolve();
     }
 
     @PluginMethod
     public void cancelListening(PluginCall call) {
         mainHandler.post(this::destroyRecognizer);
+        call.resolve();
     }
 
     @Override
@@ -259,7 +265,12 @@ public class NomaSpeechPlugin extends Plugin {
 
         @Override
         public void onEndOfSpeech() {
-            if (live()) notifyListeners("speechEnd", new JSObject());
+            // Deliberately NOT forwarded: Android calls this BEFORE
+            // onResults, and the web layer restarts the engine the
+            // moment it hears "end" — forwarding it here would have
+            // the restart destroy this recogniser and discard the
+            // utterance's final text. speechEnd is emitted at the end
+            // of onResults instead; errors terminate via speechError.
         }
 
         @Override
@@ -280,6 +291,9 @@ public class NomaSpeechPlugin extends Plugin {
                 data.put("text", text);
                 notifyListeners("speechFinal", data);
             }
+            // The utterance is fully delivered — now the end is safe
+            // to signal (see onEndOfSpeech).
+            notifyListeners("speechEnd", new JSObject());
         }
 
         @Override
