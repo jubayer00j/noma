@@ -1,6 +1,7 @@
 # Noma
 
 [![Live Demo](https://img.shields.io/badge/Web_App-mynoma.vercel.app-blue?style=flat-square&logo=vercel)](https://mynoma.vercel.app)
+[![Version](https://img.shields.io/badge/Version-1.3.0-green?style=flat-square)](https://github.com/jubayer00j/noma/releases/tag/v1.3.0)
 [![Platform](https://img.shields.io/badge/Platform-Web%20%7C%20PWA%20%7C%20Android-brightgreen?style=flat-square)](#technology-stack)
 [![Offline First](https://img.shields.io/badge/Offline--First-IndexedDB%20%2B%20Serwist-orange?style=flat-square)](#privacy--security)
 
@@ -24,6 +25,8 @@ Noma is a minimalist note-taking application designed to provide a calm, distrac
   - [Import](#import)
   - [Authentication & Cloud Backups](#authentication--cloud-backups)
   - [AI (Opt-in)](#ai-opt-in)
+    - [Ask Noma](#ask-noma)
+  - [Voice Capture](#voice-capture)
   - [Android Application](#android)
   - [Web & PWA](#webpwa)
   - [Settings](#settings)
@@ -134,16 +137,30 @@ Noma is built around a local-first architecture where device storage (IndexedDB 
 
 ### AI (Opt-in)
 
-- **Bring Your Own Key:** AI is off by default and entirely optional. Add your own API key to enable **Summarize** and **Suggest tags** on a note — one tap, one note, one call; nothing is ever sent automatically.
+- **Bring Your Own Key:** AI is off by default and entirely optional. Add your own API key to enable AI features — nothing is ever sent automatically, and every action is one you tap.
 - **Providers:** Gemini, plus OpenAI-compatible providers — OpenAI, OpenRouter, Groq, Together, DeepSeek, Mistral, or a custom endpoint. Each provider keeps its own key and model, stored only in a per-account on-device record — keys never appear in backups or sync. Locked, template, and trashed notes are excluded.
+- **Summarize + Suggest Tags:** One tap, one note, one call — a summary or tag suggestions for the note you're reading.
 - **Semantic Search:** Build a search index once in Settings → AI features, and search starts finding notes by meaning, not just words — a query can surface a note that never uses its words, even across languages. Note vectors live only on this device (never backed up, never synced), locked/template/trashed notes are never indexed, and changing provider or embedding model requires a rebuild rather than ever mixing vectors.
+
+#### Ask Noma
+
+- **Chat with your notes:** Ask a question in plain language and get an answer grounded in your own notes — the flagship feature of v1.3.0. Ask rides the semantic-search index to retrieve the passages that matter, then asks your chosen provider to answer from those passages only.
+- **Tappable citations:** Every claim carries citations back to the exact passages it came from; tap one to open the source note. If nothing in your notes grounds an answer, Ask says so plainly — *"Not in your notes"* — instead of improvising.
+- **Honest budgets & freshness:** Retrieval runs under hard budgets, and every cited passage is re-validated against the current note before the answer is shown, so an edited or deleted note never leaves a stale citation behind. Citations work in Bengali as well as English.
+- **Yours, on your key:** Ask uses the same bring-your-own-key providers as the rest of Noma's AI. Threads are kept in memory only, and nothing about your questions or notes leaves the device except the passages sent to the provider you configured.
+
+### Voice Capture
+
+- **Editor dictation:** Tap the mic in the editor toolbar and speak — final segments land at the caret as you go, in English, বাংলা, or your system language (set it in Settings → Writing → Voice capture). The live partial shows in a strip under the toolbar; only settled text enters the note, and undo treats dictation as typing.
+- **Voice quick capture:** A dedicated **Voice note** Quick Settings tile, a launcher shortcut, a PWA shortcut, and a sidebar button all open one listening sheet: speak, tap Done, and the transcript becomes a new note — titled by your first words, one paragraph per thought — opened in the editor. Empty captures create nothing, and cancelling always stops the microphone.
+- **The recogniser, honestly:** Dictation runs on your device's own speech service (Android's SpeechRecognizer / the browser's speech service) — fully on-device where your phone supports it, and on older devices that service (usually Google's) may process speech online. Noma itself stores **no audio, ever**; only the words land, as note text. And if your phone's speech service is disabled, Noma detects that and hides the mic with a plain explanation in Settings, rather than offering dictation that can't work.
 
 ### Android
 
 - **Native Mobile Integration:** Built with Capacitor 7 for native Android components and lifecycle handling.
 - **Biometric Lock:** Hardware biometric authentication support (`BIOMETRIC_STRONG`).
-- **Launcher Shortcuts:** Two static shortcuts — **New note** (`app.noma.notes://new-note`) and **Today** (`app.noma.notes://today`, opens today's daily note). Both wait behind App Lock like everything else.
-- **Quick Capture Doors:** Android share target (text and images from any app), the home-screen widget (v2 shows Today plus recent note titles, privacy-gated), and a Quick Settings tile for capture from the QS panel.
+- **Launcher Shortcuts:** Three static shortcuts — **New note** (`app.noma.notes://new-note`), **Today** (`app.noma.notes://today`, opens today's daily note), and **Voice note** (`app.noma.notes://voice-note`, opens the listening sheet). All wait behind App Lock like everything else; the PWA manifest carries matching shortcuts on web.
+- **Quick Capture Doors:** Android share target (text and images from any app), the home-screen widget (v2 shows Today plus recent note titles, privacy-gated), and **two** Quick Settings tiles — New note and Voice note — for capture from the QS panel.
 - **Native Feel:** The system back button unwinds the app properly, note rows have swipe actions with undo, a small deliberate haptics vocabulary, a splash that hands off when the first frame paints, optional Material You dynamic colour (Android 12+), and edge-to-edge layout throughout.
 - **SAF File Streaming:** Native Base64 chunked file streaming for Android Storage Access Framework exports.
 
@@ -269,7 +286,11 @@ The native Android project is managed using Capacitor 7 and located in the `andr
    _Output APK location: `android/app/build/outputs/apk/debug/app-debug.apk`._
 
 3. **GitHub Actions CI:**
-   Automated debug APK workflow is configured in `.github/workflows/android.yml`.
+   The Android workflow (`.github/workflows/android.yml`) builds the debug APK on every push — and, when the signing secrets are present, the **signed release APK and AAB** as well.
+
+### Release Builds
+
+Release builds are signed with the project's own release key (held only in CI secrets, never in the repo). CI uploads them as the `app-release` (APK) and `app-release-bundle` (AAB) artifacts; the APK is attached to each [GitHub Release](https://github.com/jubayer00j/noma/releases). There is no Play Store listing yet — Android distribution is the signed APK from GitHub Releases, and the web app is the installable PWA.
 
 ---
 
@@ -312,9 +333,10 @@ Contributions are welcome! If you encounter an issue or wish to propose an enhan
 
 ## Project Status
 
+- **Current release:** **v1.3.0** — Ask Noma, voice capture, and the first signed release builds. See [CHANGELOG.md](CHANGELOG.md) and the [GitHub Release](https://github.com/jubayer00j/noma/releases/tag/v1.3.0).
 - **Web Application:** Production PWA live at [https://mynoma.vercel.app](https://mynoma.vercel.app).
 - **Offline Storage:** Operating via IndexedDB storage and Serwist service worker caching.
-- **Android Application:** Integrated native Android build using Capacitor 7 featuring local notifications, biometric App Lock, Storage Access Framework backups, and launcher shortcuts.
+- **Android Application:** Capacitor 7 native build featuring local notifications, biometric App Lock, Storage Access Framework backups, launcher shortcuts, Quick Settings tiles, and voice capture — distributed as a signed APK via GitHub Releases.
 
 ---
 

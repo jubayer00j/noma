@@ -2,6 +2,21 @@
 
 All notable changes to Noma. Dates are merge dates on `main`.
 
+## v1.3.0 — 2026-10-30
+
+The third feature release — and the first signed one. Distilled from the 2026-10-29 – 2026-10-30 programme (Ask Noma PRs #99–#105, signed builds PR #106, voice capture PRs #107–#109, voice-probe fixes PRs #110–#111, detailed in the dated entries below).
+
+**New**
+
+- **Ask Noma:** chat with your notes. Grounded Q&A over your own notes on your own AI key: retrieval rides the semantic index, answers answer from retrieved passages only, carry tappable citations, and re-validate every passage before showing; when nothing grounds an answer, Ask says "Not in your notes" instead of improvising. Citations parse in Bengali as well as English, and per-model similarity floors keep weak matches out (PRs #99–#104).
+- **Voice capture:** dictate into the editor (mic in the toolbar, finals land at the caret, live partials in a strip) or capture hands-free from a Voice note Quick Settings tile, launcher shortcut, PWA shortcut, or the sidebar — the transcript becomes a note, titled by your first words. System / English / বাংলা. The recogniser is the device's own speech service; Noma stores no audio, ever (PRs #107–#109).
+- **Signed release builds:** Noma has a real release key now. CI produces a signed release APK (attached to GitHub Releases) and an AAB alongside the debug build; every release up to now shipped the debug build (PR #106).
+
+**Fixed**
+
+- The Ask composer no longer slides behind the keyboard in the installed Android app (PR #105).
+- Voice capture no longer offers a microphone that can't work: when the phone's speech-recognition service is disabled, the probe detects it, the mic is hidden everywhere, Settings names the disabled app with the way back — and the failure determination for the on-device fallback path is made inside the plugin, where which recogniser actually ran is known (PRs #110, #111).
+
 ## 2026-10-30
 
 ### Signed release builds: release APK + bundle from CI

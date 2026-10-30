@@ -183,7 +183,7 @@ describe("Settings root list", () => {
       ["AI features", "Not set up"],
       ["Data", "0 notes on this device"],
       ["Account", "jubayer@example.com"],
-      ["About", "v1.2.0"],
+      ["About", "v1.3.0"],
     ];
     for (const [title, summary] of expected) {
       const row = rowButton(title);
@@ -299,7 +299,7 @@ describe("Settings sub-screens", () => {
     click(rowButton("Settings"));
 
     click(rowButton("About"));
-    expect(screenEl("about").textContent).toContain("Noma v1.2.0");
+    expect(screenEl("about").textContent).toContain("Noma v1.3.0");
     expect(screenEl("about").textContent).toContain("local-first");
   });
 
