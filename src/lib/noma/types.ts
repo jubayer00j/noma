@@ -35,6 +35,10 @@ export interface NoteLock {
 /** User-selectable appearance. "nature" is a standalone warm light theme. "amoled" is pure black. */
 export type ThemeSetting = "light" | "dark" | "system" | "nature" | "amoled";
 
+/** Voice capture dictation language (voice capture PR-B): follow the
+ *  device, or pin English / Bangla. Resolved to a BCP-47 tag in speech.ts. */
+export type SpeechLanguageSetting = "system" | "en" | "bn";
+
 /** Automatic backup strategy: never, sync shortly after changes, or on a schedule. */
 export type BackupMode = "off" | "sync" | "scheduled";
 
@@ -168,6 +172,8 @@ export interface AppSettings {
   fontSize: number;
   editorWidth: number;
   lineHeight: number;
+  /** Dictation language for voice capture (editor dictation + voice notes). */
+  speechLanguage: SpeechLanguageSetting;
   autoBackup: boolean;
   /** Automatic backup strategy (supersedes the legacy `autoBackup` toggle). */
   backupMode: BackupMode;
@@ -309,6 +315,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fontSize: 17,
   editorWidth: 720,
   lineHeight: 1.7,
+  speechLanguage: "system",
   autoBackup: false,
   backupMode: "off",
   backupIntervalMinutes: 1440,
