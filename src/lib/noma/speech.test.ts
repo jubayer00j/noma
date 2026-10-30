@@ -11,6 +11,7 @@ import {
   segmentsToParagraphs,
   segmentsToText,
   speechSessionReducer,
+  voiceNoteTitle,
   type SpeechEngine,
   type SpeechEngineHandlers,
   type SpeechSessionSnapshot,
@@ -54,6 +55,15 @@ describe("transcript assembly", () => {
     expect(segmentsToParagraphs(segments)).toBe("First thought.\n\nSecond thought.");
     expect(segmentsToText(segments)).toBe("First thought. Second thought.");
     expect(segmentsToParagraphs([])).toBe("");
+  });
+
+  it("voiceNoteTitle names the note from its first spoken segment", () => {
+    expect(voiceNoteTitle(["  Buy milk and eggs  ", "Also call mum"])).toBe("Buy milk and eggs");
+    expect(voiceNoteTitle(["", "  ", "Second is first real"])).toBe("Second is first real");
+    expect(voiceNoteTitle([])).toBe("");
+    expect(voiceNoteTitle(["   "])).toBe("");
+    const long = "x".repeat(250);
+    expect(voiceNoteTitle([long]).length).toBe(200);
   });
 
   it("dictationJoin adds exactly one space, only when needed", () => {

@@ -73,6 +73,19 @@ export function segmentsToText(segments: readonly string[]): string {
     .join(" ");
 }
 
+/** Title cap for a voice note — mirrors the share pipeline's title cap. */
+export const VOICE_NOTE_TITLE_MAX_CHARS = 200;
+
+/**
+ * A voice note's title: its first spoken segment, trimmed and capped —
+ * the same "first line names the note" convention typed notes follow.
+ * Empty when nothing was recognised (the caller creates no note then).
+ */
+export function voiceNoteTitle(segments: readonly string[]): string {
+  const first = segments.map((s) => s.trim()).find((s) => s.length > 0) ?? "";
+  return first.slice(0, VOICE_NOTE_TITLE_MAX_CHARS).trim();
+}
+
 /**
  * Editor insertion spacing: joining a dictated segment onto the text
  * before the caret takes exactly one space, and only when the

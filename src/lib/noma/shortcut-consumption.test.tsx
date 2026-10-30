@@ -122,6 +122,7 @@ interface ProbeProps {
   isLockStateResolving: boolean;
   onNewNote: () => void;
   onToday: () => void | Promise<void>;
+  onVoiceNote?: () => void | Promise<void>;
 }
 
 function Probe(props: ProbeProps) {
@@ -131,6 +132,7 @@ function Probe(props: ProbeProps) {
     isLocked: props.isLocked,
     onNewNote: props.onNewNote,
     onToday: props.onToday,
+    onVoiceNote: props.onVoiceNote,
   });
   return null;
 }
@@ -268,6 +270,29 @@ describe("useShortcutConsumption — the gate", () => {
     await flush();
     expect(onNewNote).toHaveBeenCalledTimes(1);
     expect(onToday).not.toHaveBeenCalled();
+  });
+
+  it("holds a Voice note trigger behind App Lock, then routes it once on unlock", async () => {
+    const fake = new FakeDb();
+    const onNewNote = vi.fn();
+    const onToday = vi.fn();
+    const onVoiceNote = vi.fn();
+    const gate = { db: asDb(fake), onNewNote, onToday, onVoiceNote };
+
+    await trigger("app.noma.notes://voice-note");
+    await render(<Probe {...gate} isLocked isLockStateResolving={false} />);
+    await flush();
+    expect(onVoiceNote).not.toHaveBeenCalled();
+
+    await render(<Probe {...gate} isLocked={false} isLockStateResolving={false} />);
+    await flush();
+    expect(onVoiceNote).toHaveBeenCalledTimes(1);
+    expect(onNewNote).not.toHaveBeenCalled();
+    expect(onToday).not.toHaveBeenCalled();
+
+    await render(<Probe {...gate} isLocked={false} isLockStateResolving={false} />);
+    await flush();
+    expect(onVoiceNote).toHaveBeenCalledTimes(1);
   });
 });
 

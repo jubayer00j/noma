@@ -32,6 +32,8 @@ import { useStableNotes } from "./use-stable-notes";
 import type { VirtualListHandle } from "./virtual-list";
 import { NotesListSurfaceContext } from "./notes-list-surface-context";
 import { PromptDialog, type PromptRequest } from "./prompt-dialog";
+import { VoiceCaptureSheet } from "./voice-capture-sheet";
+import { defaultSpeechEngine } from "@/lib/noma/speech";
 import { NoteExportDialog } from "./note-export-dialog";
 import { NoteLockDialog } from "./note-lock-dialog";
 import { NoteLockGate } from "./note-lock-gate";
@@ -997,6 +999,57 @@ export function Workspace() {
     [db],
   );
 
+  // Voice quick capture (PR-C): every voice door — the QS tile, the
+  // launcher shortcut, the PWA shortcut (all through shortcut.ts's
+  // gated consumption below) and the sidebar button — opens the one
+  // listening sheet. The sidebar door is only offered when the engine
+  // probe finds a recogniser on this device/browser.
+  const [voiceSheetOpen, setVoiceSheetOpen] = useState(false);
+  const [voiceAvailable, setVoiceAvailable] = useState(false);
+
+  useEffect(() => {
+    const engine = defaultSpeechEngine();
+    if (!engine) return;
+    let live = true;
+    engine
+      .probe()
+      .then((probe) => {
+        if (live) setVoiceAvailable(probe.available);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const handleVoiceNote = useCallback(() => {
+    setMobileNavOpen(false);
+    setVoiceSheetOpen(true);
+  }, []);
+
+  /** A finished voice note becomes a real note and opens in the editor —
+   * the share capture's end state, with the transcript as its content. */
+  const handleVoiceNoteSave = useCallback(
+    async (title: string, content: string) => {
+      if (!db) return;
+      const note = await createNote(db, { title, content });
+      // updateNote re-sanitises and recounts words (createNote stores raw init).
+      if (content) await updateNote(db, note.id, { content });
+      setVoiceSheetOpen(false);
+      setDraft(null);
+      setSaveState("idle");
+      setActiveNoteId(note.id);
+      setNoteMode("edit");
+      setEditReturnTo("list");
+    },
+    [db],
+  );
+
+  const handleVoiceTypeInstead = useCallback(() => {
+    setVoiceSheetOpen(false);
+    void handleNewNote();
+  }, [handleNewNote]);
+
   // Respond to launcher shortcut triggers once DB is loaded and App Lock
   // is unlocked — the gate and consume-once semantics live in shortcut.ts.
   useShortcutConsumption({
@@ -1005,6 +1058,7 @@ export function Workspace() {
     isLocked,
     onNewNote: handleNewNote,
     onToday: openTodayNote,
+    onVoiceNote: handleVoiceNote,
   });
 
   // Consume quick-capture requests (share target, widget, tile, PWA doors)
@@ -1378,6 +1432,7 @@ export function Workspace() {
       }}
       onNewNote={handleNewNote}
       onOpenToday={openTodayNote}
+      onVoiceNote={voiceAvailable ? handleVoiceNote : undefined}
       onCreateFolder={() =>
         setPrompt({
           title: "New folder",
@@ -1866,6 +1921,14 @@ export function Workspace() {
       </Dialog>
 
       <PromptDialog request={prompt} onClose={() => setPrompt(null)} />
+
+      <VoiceCaptureSheet
+        open={voiceSheetOpen}
+        speechLanguage={settings.speechLanguage}
+        onOpenChange={setVoiceSheetOpen}
+        onSave={(title, content) => void handleVoiceNoteSave(title, content)}
+        onTypeInstead={handleVoiceTypeInstead}
+      />
 
       {reminderTargetNote && (
         <ReminderDialog
