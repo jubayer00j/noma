@@ -33,6 +33,7 @@ export function VoiceSection() {
   const { settings, update } = useSettings();
   const [availability, setAvailability] = useState<Availability>("checking");
   const [onDevice, setOnDevice] = useState(false);
+  const [blockedApp, setBlockedApp] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -47,6 +48,9 @@ export function VoiceSection() {
         if (!live) return;
         setAvailability(probe.available ? "available" : "unavailable");
         setOnDevice(probe.onDevice);
+        if (!probe.available && probe.reason === "service-disabled") {
+          setBlockedApp(probe.serviceApp ?? "");
+        }
       })
       .catch(() => {
         if (live) setAvailability("unavailable");
@@ -95,12 +99,19 @@ export function VoiceSection() {
         {availability === "checking" && (
           <p className="text-xs text-muted-foreground">Checking this device…</p>
         )}
-        {availability === "unavailable" && (
-          <p className="text-xs text-muted-foreground">
-            No speech recogniser is available on this device or browser, so voice capture is off
-            here. Everything else works as usual.
-          </p>
-        )}
+        {availability === "unavailable" &&
+          (blockedApp !== null ? (
+            <p className="text-xs text-muted-foreground">
+              Your phone&apos;s speech service{blockedApp ? ` — ${blockedApp} —` : ""} is disabled,
+              so dictation can&apos;t run. Enable it, or choose a different voice input in your
+              system settings, and voice capture will be available here.
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              No speech recogniser is available on this device or browser, so voice capture is off
+              here. Everything else works as usual.
+            </p>
+          ))}
       </div>
     </div>
   );

@@ -1,11 +1,16 @@
 package app.noma.notes;
 
 import android.Manifest;
+import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
@@ -78,7 +83,59 @@ public class NomaSpeechPlugin extends Plugin {
         JSObject res = new JSObject();
         res.put("available", available);
         res.put("onDevice", onDevice);
+        // Honesty pass: isRecognitionAvailable only proves a service is
+        // REGISTERED. If the app providing the default service has been
+        // disabled (a common debloat move — e.g. disabling the Google
+        // app), createSpeechRecognizer still binds to it and every
+        // session dies instantly with a generic error. Detect that
+        // here so the web layer can stop offering a dead mic and say
+        // why. Skipped when an on-device recogniser exists: start
+        // prefers it, so the session may still be viable.
+        if (available && !onDevice) {
+            String disabledApp = disabledDefaultServiceApp();
+            if (disabledApp != null) {
+                res.put("available", false);
+                res.put("reason", "service-disabled");
+                res.put("serviceApp", disabledApp);
+            }
+        }
         call.resolve(res);
+    }
+
+    /**
+     * The label of the app providing the system's default recognition
+     * service when that app (or the service component itself) is
+     * disabled; null when the default service looks runnable or can't
+     * be determined — any failure stays silent and the base probe
+     * stands.
+     */
+    private String disabledDefaultServiceApp() {
+        try {
+            Context ctx = getContext();
+            // Settings.Secure.VOICE_RECOGNITION_SERVICE's value; the
+            // constant is not public API, the key string is stable.
+            String flat = Settings.Secure.getString(
+                ctx.getContentResolver(), "voice_recognition_service");
+            if (flat == null || flat.isEmpty()) return null;
+            ComponentName service = ComponentName.unflattenFromString(flat);
+            if (service == null) return null;
+            PackageManager pm = ctx.getPackageManager();
+            int appState = pm.getApplicationEnabledSetting(service.getPackageName());
+            int serviceState = pm.getComponentEnabledSetting(service);
+            boolean disabled = appState == PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+                || appState == PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER
+                || serviceState == PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
+            if (!disabled) return null;
+            try {
+                ApplicationInfo info = pm.getApplicationInfo(service.getPackageName(), 0);
+                CharSequence label = pm.getApplicationLabel(info);
+                return label != null ? label.toString() : service.getPackageName();
+            } catch (Exception e) {
+                return service.getPackageName();
+            }
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     @PluginMethod
