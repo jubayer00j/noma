@@ -69,5 +69,17 @@ describe("VoiceSection availability copy", () => {
   it("shows the platform disclosure when a recogniser is available", async () => {
     await renderSection({ available: true, onDevice: false });
     expect(container.textContent).toContain("recognised by your device's speech service");
+    expect(container.textContent).not.toContain("Heads-up");
+  });
+
+  it("adds the heads-up when only the on-device recogniser keeps dictation viable", async () => {
+    await renderSection({
+      available: true,
+      onDevice: true,
+      reason: "service-disabled",
+      serviceApp: "Google",
+    });
+    expect(container.textContent).toContain("Heads-up: the online speech service (Google)");
+    expect(container.textContent).toContain("dictation relies on the on-device recogniser");
   });
 });

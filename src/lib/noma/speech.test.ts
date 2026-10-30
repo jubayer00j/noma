@@ -239,6 +239,14 @@ describe("createSpeechSession", () => {
     expect(calls.start).toBe(0);
   });
 
+  it("a plugin-reported service-disabled error reaches the snapshot untouched", async () => {
+    const { engine, emit } = fakeEngine();
+    const session = createSpeechSession(engine);
+    await session.start("en-US");
+    emit().onError("service-disabled");
+    expect(session.getSnapshot()).toMatchObject({ state: "error", errorKind: "service-disabled" });
+  });
+
   it("partials and finals flow into the snapshot", async () => {
     const { engine, emit } = fakeEngine();
     const session = createSpeechSession(engine);

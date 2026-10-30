@@ -89,14 +89,19 @@ public class NomaSpeechPlugin extends Plugin {
         // app), createSpeechRecognizer still binds to it and every
         // session dies instantly with a generic error. Detect that
         // here so the web layer can stop offering a dead mic and say
-        // why. Skipped when an on-device recogniser exists: start
-        // prefers it, so the session may still be viable.
-        if (available && !onDevice) {
+        // why. With an on-device recogniser the mic stays offered —
+        // start prefers it — and the reason rides along as an
+        // advisory for the Settings heads-up. (If on-device creation
+        // then fails at runtime, startOnMain itself reports the
+        // dead-service start; the web layer never guesses.)
+        if (available) {
             String disabledApp = disabledDefaultServiceApp();
             if (disabledApp != null) {
-                res.put("available", false);
                 res.put("reason", "service-disabled");
                 res.put("serviceApp", disabledApp);
+                if (!onDevice) {
+                    res.put("available", false);
+                }
             }
         }
         call.resolve(res);
@@ -212,29 +217,39 @@ public class NomaSpeechPlugin extends Plugin {
     private void startOnMain(String language) {
         destroyRecognizer();
         final int gen = ++generation;
-        try {
-            SpeechRecognizer created = null;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-                && SpeechRecognizer.isOnDeviceRecognitionAvailable(getContext())) {
-                try {
-                    created = SpeechRecognizer.createOnDeviceSpeechRecognizer(getContext());
-                } catch (Exception e) {
-                    // The probe said on-device exists but creation
-                    // failed (quirky OEM build) — fall through to the
-                    // platform recogniser rather than failing the
-                    // session. The Settings disclosure keys off the
-                    // same probe, so the two stay aligned.
-                    Log.w(TAG, "on-device recogniser creation failed; using platform recogniser", e);
-                }
+        SpeechRecognizer created = null;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+            && SpeechRecognizer.isOnDeviceRecognitionAvailable(getContext())) {
+            try {
+                created = SpeechRecognizer.createOnDeviceSpeechRecognizer(getContext());
+            } catch (Exception e) {
+                // The probe said on-device exists but creation failed
+                // (quirky OEM build) — the platform recogniser below
+                // is the fallback.
+                Log.w(TAG, "on-device recogniser creation failed; using platform recogniser", e);
             }
-            recognizer = created != null
-                ? created
-                : SpeechRecognizer.createSpeechRecognizer(getContext());
-        } catch (Exception e) {
-            Log.w(TAG, "createSpeechRecognizer failed", e);
-            emitError(gen, SpeechRecognizer.ERROR_CLIENT);
-            return;
         }
+        if (created == null) {
+            // The platform recogniser is the only path left. If its
+            // service is disabled it cannot run at all — say so
+            // directly instead of binding to a dead service and
+            // surfacing a generic error. Which recogniser ran and
+            // whether its service can run are facts only this class
+            // knows; the web layer must never have to guess them
+            // from a probe advisory.
+            if (disabledDefaultServiceApp() != null) {
+                emitErrorKind(gen, "service-disabled");
+                return;
+            }
+            try {
+                created = SpeechRecognizer.createSpeechRecognizer(getContext());
+            } catch (Exception e) {
+                Log.w(TAG, "createSpeechRecognizer failed", e);
+                emitError(gen, SpeechRecognizer.ERROR_CLIENT);
+                return;
+            }
+        }
+        recognizer = created;
         recognizer.setRecognitionListener(new SessionListener(gen));
 
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
@@ -276,6 +291,14 @@ public class NomaSpeechPlugin extends Plugin {
         JSObject data = new JSObject();
         data.put("code", code);
         data.put("kind", errorKind(code));
+        notifyListeners("speechError", data);
+    }
+
+    /** Emits a speechError with an explicit kind (no platform code). */
+    private void emitErrorKind(int gen, String kind) {
+        if (gen != generation) return;
+        JSObject data = new JSObject();
+        data.put("kind", kind);
         notifyListeners("speechError", data);
     }
 

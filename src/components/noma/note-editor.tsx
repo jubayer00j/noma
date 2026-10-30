@@ -84,6 +84,7 @@ interface NoteEditorProps {
 const SPEECH_ERROR_LINES: Record<SpeechErrorKind, string> = {
   permission: "Microphone access was denied — you can allow it in your device settings.",
   unavailable: "Voice capture isn't available on this device.",
+  "service-disabled": "Your phone's speech service is disabled, so dictation can't run.",
   "no-speech": "Didn't catch that — try again, a little closer to the mic.",
   "no-match": "Didn't catch that — try again.",
   "speech-timeout": "Didn't catch that — try again.",

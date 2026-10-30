@@ -34,6 +34,7 @@ export function VoiceSection() {
   const [availability, setAvailability] = useState<Availability>("checking");
   const [onDevice, setOnDevice] = useState(false);
   const [blockedApp, setBlockedApp] = useState<string | null>(null);
+  const [fallbackApp, setFallbackApp] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -50,6 +51,9 @@ export function VoiceSection() {
         setOnDevice(probe.onDevice);
         if (!probe.available && probe.reason === "service-disabled") {
           setBlockedApp(probe.serviceApp ?? "");
+        }
+        if (probe.available && probe.reason === "service-disabled") {
+          setFallbackApp(probe.serviceApp ?? "");
         }
       })
       .catch(() => {
@@ -79,6 +83,13 @@ export function VoiceSection() {
         )}
         Noma never stores audio; only the words you dictate are kept, as note text.
       </p>
+
+      {availability === "available" && fallbackApp !== null && (
+        <p className="text-xs text-muted-foreground">
+          Heads-up: the online speech service{fallbackApp ? ` (${fallbackApp})` : ""} is disabled on
+          this device, so dictation relies on the on-device recogniser.
+        </p>
+      )}
 
       <div className="space-y-2">
         <Label htmlFor="speech-language">Dictation language</Label>

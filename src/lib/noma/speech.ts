@@ -122,6 +122,7 @@ export function dictationInsertionText(beforeChar: string, segment: string): str
  */
 export type SpeechErrorKind =
   | "unavailable"
+  | "service-disabled"
   | "permission"
   | "no-speech"
   | "no-match"
@@ -241,8 +242,13 @@ export type SpeechUnavailableReason = "service-disabled";
 
 /** What an engine probe reports. The reason fields are the native
  * probe's honesty pass: a registered-but-disabled default speech
- * service reports unavailable WITH the reason and the app's label,
- * so the UI can explain instead of offering a mic that can't work. */
+ * service is reported WITH the reason and the app's label. When no
+ * on-device recogniser exists that makes the probe unavailable and
+ * the UI stops offering the mic; when one does, the mic stays
+ * offered and the reason rides along as an advisory (the Settings
+ * heads-up). Naming a runtime failure is NOT built on the advisory:
+ * only the plugin knows which recogniser actually ran, so the
+ * plugin itself reports a dead-service start as "service-disabled". */
 export interface SpeechProbe {
   available: boolean;
   onDevice: boolean;
@@ -291,6 +297,11 @@ const NATIVE_ERROR_KINDS: ReadonlySet<string> = new Set([
   "busy",
   "server",
   "client",
+  // Emitted by the plugin itself (not a platform error code) when
+  // the only recogniser it could create belongs to a disabled
+  // service — a determination only the plugin can make, since only
+  // it knows which recogniser actually ran.
+  "service-disabled",
 ]);
 
 function nativeErrorKind(kind: string | undefined): SpeechErrorKind {
@@ -543,7 +554,9 @@ export function createSpeechSession(engine: SpeechEngine): SpeechSession {
       languageTag = tag;
       dispatch({ type: "start-requested" });
       const stillRequesting = () => snapshot.state === "requesting-permission";
-      const probe = await engine.probe().catch(() => ({ available: false, onDevice: false }));
+      const probe: SpeechProbe = await engine
+        .probe()
+        .catch((): SpeechProbe => ({ available: false, onDevice: false }));
       if (!stillRequesting()) return;
       if (!probe.available) {
         dispatch({ type: "unavailable" });
