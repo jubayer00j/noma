@@ -8,10 +8,13 @@
     <string name="shortcut_note_long">Create a new note</string>
     <string name="shortcut_today_short">Today</string>
     <string name="shortcut_today_long">Open today\'s note</string>
+    <string name="shortcut_voice_short">Voice note</string>
+    <string name="shortcut_voice_long">Dictate a new note</string>
     <string name="widget_label">New note</string>
     <string name="widget_caption">Capture a thought</string>
     <string name="widget_description">Quickly capture a new note in Noma</string>
     <string name="widget_today_label">Today</string>
     <string name="widget_today_invite">Today\'s note — tap to start</string>
     <string name="tile_label">New note</string>
+    <string name="tile_voice_label">Voice note</string>
 </resources>

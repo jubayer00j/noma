@@ -3,9 +3,9 @@ import { Capacitor } from "@capacitor/core";
 import { App as CapacitorApp, type URLOpenListenerEvent } from "@capacitor/app";
 
 /** The only launcher-shortcut actions Noma answers to. */
-export type ShortcutAction = "new-note" | "today";
+export type ShortcutAction = "new-note" | "today" | "voice-note";
 
-const SHORTCUT_ACTIONS: readonly ShortcutAction[] = ["new-note", "today"];
+const SHORTCUT_ACTIONS: readonly ShortcutAction[] = ["new-note", "today", "voice-note"];
 
 let pendingShortcut: { id: number; action: ShortcutAction } | null = null;
 let lastProcessedId = 0;
@@ -160,9 +160,11 @@ export function useShortcutConsumption<Db>(options: {
   isLocked: boolean;
   onNewNote: () => void | Promise<void>;
   onToday: () => void | Promise<void>;
+  /** Optional: doors exist only where a handler is wired (the workspace). */
+  onVoiceNote?: (() => void | Promise<void>) | undefined;
 }): void {
   const { action, consumeShortcut } = usePendingShortcut();
-  const { db, isLockStateResolving, isLocked, onNewNote, onToday } = options;
+  const { db, isLockStateResolving, isLocked, onNewNote, onToday, onVoiceNote } = options;
 
   useEffect(() => {
     if (!db || isLockStateResolving || isLocked) return;
@@ -172,8 +174,20 @@ export function useShortcutConsumption<Db>(options: {
     } else if (action === "today") {
       consumeShortcut();
       void onToday();
+    } else if (action === "voice-note") {
+      consumeShortcut();
+      if (onVoiceNote) void onVoiceNote();
     }
-  }, [action, db, isLockStateResolving, isLocked, consumeShortcut, onNewNote, onToday]);
+  }, [
+    action,
+    db,
+    isLockStateResolving,
+    isLocked,
+    consumeShortcut,
+    onNewNote,
+    onToday,
+    onVoiceNote,
+  ]);
 }
 
 /** Test seam, mirroring capture.ts: clears the pending slot and dedupe id. */

@@ -56,6 +56,19 @@
           "type": "image/png"
         }
       ]
+    },
+    {
+      "name": "Voice note",
+      "short_name": "Voice note",
+      "description": "Dictate a new note in Noma",
+      "url": "/?shortcut=voice-note",
+      "icons": [
+        {
+          "src": "/noma-icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
     }
   ]
 }

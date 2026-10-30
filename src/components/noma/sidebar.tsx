@@ -10,6 +10,7 @@ import {
   Hash,
   HelpCircle,
   LayoutTemplate,
+  Mic,
   MoreHorizontal,
   NotebookPen,
   Pencil,
@@ -44,6 +45,8 @@ interface SidebarProps {
   onOpenAsk?: () => void;
   onNewNote: () => void;
   onOpenToday: () => void;
+  /** Voice quick capture (PR-C); only passed when a recogniser exists. */
+  onVoiceNote?: (() => void) | undefined;
   onCreateFolder: () => void;
   onRenameFolder: (folder: Folder) => void;
   onDeleteFolder: (folder: Folder) => void;
@@ -97,6 +100,7 @@ export function NomaSidebar({
   onOpenAsk,
   onNewNote,
   onOpenToday,
+  onVoiceNote,
   onCreateFolder,
   onRenameFolder,
   onDeleteFolder,
@@ -171,6 +175,16 @@ export function NomaSidebar({
           <CalendarDays className="size-4" />
           Today
         </Button>
+        {onVoiceNote && (
+          <Button
+            variant="ghost"
+            className="mt-1.5 h-9 w-full justify-start gap-2 text-muted-foreground hover:text-sidebar-accent-foreground"
+            onClick={onVoiceNote}
+          >
+            <Mic className="size-4" />
+            Voice note
+          </Button>
+        )}
       </div>
 
       <nav className="noma-scroll flex-1 space-y-6 overflow-y-auto px-3 pb-6">

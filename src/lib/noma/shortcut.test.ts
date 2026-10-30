@@ -68,6 +68,8 @@ describe("parseShortcutAction — accepts", () => {
     expect(parseShortcutAction("app.noma.notes://new-note/")).toBe("new-note");
     expect(parseShortcutAction("app.noma.notes://today")).toBe("today");
     expect(parseShortcutAction("app.noma.notes://today/")).toBe("today");
+    expect(parseShortcutAction("app.noma.notes://voice-note")).toBe("voice-note");
+    expect(parseShortcutAction("app.noma.notes://voice-note/")).toBe("voice-note");
   });
 });
 
@@ -77,6 +79,7 @@ describe("parseShortcutAction — rejects", () => {
     expect(parseShortcutAction("https://new-note")).toBeNull();
     expect(parseShortcutAction("app.noma.notes://search")).toBeNull();
     expect(parseShortcutAction("app.noma.notes://new-note.evil.com")).toBeNull();
+    expect(parseShortcutAction("app.noma.notes://voice-note.evil")).toBeNull();
     expect(parseShortcutAction("app.noma.notes://today.evil")).toBeNull();
     expect(parseShortcutAction("app.noma.notes://")).toBeNull();
   });
